@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font-size:14px;font-family:system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>Radar Servizio</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: one column, tool-first. Readout on top, camera stage, controls, session log. */
+:root {
+  --bg: #eef2f6;
+  --surface: #ffffff;
+  --line: #d5dde6;
+  --fg: #14202b;
+  --muted: #5a6978;
+  --court: #2756a0;        /* hard-court blue: interactive */
+  --court-ink: #ffffff;
+  --ball: #d4ef4a;         /* optic yellow: fills only */
+  --ball-ink: #1d2a06;
+  --good: #1f8a4c;
+  --warn: #b86e00;
+  --bad: #c0392b;
+  --display: "Barlow Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d151e; --surface: #15202c; --line: #263444; --fg: #e6edf4; --muted: #8e9cab;
+    --court: #5b8fdb; --court-ink: #0b1420; --ball: #d4ef4a; --ball-ink: #1d2a06;
+    --good: #45c27a; --warn: #f0a33a; --bad: #ef6b5e; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d151e; --surface: #15202c; --line: #263444; --fg: #e6edf4; --muted: #8e9cab;
+  --court: #5b8fdb; --court-ink: #0b1420; --ball: #d4ef4a; --ball-ink: #1d2a06;
+  --good: #45c27a; --warn: #f0a33a; --bad: #ef6b5e; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 40px;
+}
+.wrap { max-width: 760px; margin: 0 auto; display: grid; gap: 16px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-family: var(--display); font-weight: 700; font-size: 30px; letter-spacing: .01em; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0; letter-spacing: .02em; }
+.pill { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
+.pill.on { border-color: var(--good); color: var(--good); }
+.pill.err { border-color: var(--bad); color: var(--bad); }
+
+.readout { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; align-items: end; }
+.speed { font-family: var(--display); font-weight: 700; font-size: clamp(64px, 20vw, 112px); line-height: .9; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.speed small { font-size: .32em; font-weight: 600; color: var(--muted); margin-left: 6px; letter-spacing: .04em; }
+.speed.flash { animation: flash .9s ease-out; }
+@keyframes flash { from { color: var(--good); } to { color: var(--fg); } }
+.stats { display: grid; gap: 2px; text-align: right; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stats b { color: var(--fg); font-weight: 600; }
+.detail { grid-column: 1 / -1; font-size: 13px; color: var(--muted); min-height: 1.5em; }
+.q { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border-radius: 4px; margin-right: 6px; color: var(--surface); }
+.q.good { background: var(--good); } .q.warn { background: var(--warn); } .q.bad { background: var(--bad); }
+
+.quick { display: flex; flex-wrap: wrap; gap: 8px; }
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+.seg button { border: 0; border-radius: 0; background: transparent; min-height: 42px; padding: 8px 14px; font-weight: 600; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--court); color: var(--court-ink); }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.grid2 label { display: grid; gap: 4px; font-size: 13px; font-weight: 500; color: var(--muted); }
+.grid2 select { width: 100%; }
+.stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 16 / 9; max-width: 100%; }
+.stage video, .stage canvas.view { display: block; width: 100%; height: 100%; object-fit: contain; }
+.stage canvas.overlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: manipulation; }
+.stage .hint { position: absolute; left: 10px; right: 10px; top: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(10, 16, 24, .78); color: #fff; font-size: 14px; font-weight: 500; pointer-events: none; }
+.stage .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: #c9d3dd; padding: 20px; font-size: 14px; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button, .filebtn, select {
+  font: inherit; font-size: 14px; font-weight: 600; border-radius: 10px; padding: 10px 14px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--fg); cursor: pointer; min-height: 44px;
+}
+button.primary { background: var(--court); color: var(--court-ink); border-color: var(--court); }
+button.ball { background: var(--ball); color: var(--ball-ink); border-color: var(--ball); }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, select:focus-visible, .filebtn:focus-within, input:focus-visible { outline: 3px solid var(--court); outline-offset: 2px; }
+.filebtn { display: inline-flex; align-items: center; }
+.filebtn input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+select { font-weight: 500; max-width: 100%; }
+label.inline { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+input[type=range] { width: 160px; accent-color: var(--court); }
+.steps { display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px; }
+.steps span { padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line); color: var(--muted); }
+.steps span.cur { border-color: var(--court); color: var(--court); font-weight: 600; }
+.steps span.ok { border-color: var(--good); color: var(--good); }
+.msg { font-size: 13px; color: var(--muted); }
+.msg.err { color: var(--bad); }
+
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 14px; }
+th { text-align: left; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+td { padding: 8px 4px; border-bottom: 1px solid var(--line); }
+td.num { font-family: var(--display); font-size: 20px; font-weight: 600; }
+.tablewrap { overflow-x: auto; }
+details summary { cursor: pointer; font-weight: 600; }
+details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 6px; max-width: 65ch; }
+.muted { color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .speed.flash { animation: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Radar Servizio</h1>
+    <span id="status" class="pill">Fermo</span>
+  </header>
+
+  <section class="readout" aria-live="polite">
+    <div class="speed" id="speed">—<small>km/h</small></div>
+    <div class="stats">
+      <span>Migliore <b id="best">—</b></span>
+      <span>Media <b id="avg">—</b></span>
+      <span>Servizi <b id="count">0</b></span>
+    </div>
+    <div class="detail" id="detail">Prova la demo qui sotto, oppure avvia la fotocamera e calibra il campo.</div>
+  </section>
+
+  <section class="quick" aria-label="Questo servizio">
+    <div class="seg" role="group" aria-label="Metà da cui servi" data-key="side">
+      <button type="button" data-v="1">Metà vicina al telefono</button>
+      <button type="button" data-v="-1">Metà lontana</button>
+    </div>
+    <div class="seg" role="group" aria-label="Direzione del servizio" data-key="targetY">
+      <button type="button" data-v="0.5">Al T</button>
+      <button type="button" data-v="2.06">Al corpo</button>
+      <button type="button" data-v="3.6">Esterno</button>
+    </div>
+  </section>
+
+  <section class="stage" id="stage">
+    <video id="video" playsinline muted hidden></video>
+    <canvas id="demoView" class="view" hidden></canvas>
+    <canvas id="overlay" class="overlay"></canvas>
+    <div class="empty" id="empty">Nessuna sorgente video.<br>Scegli Fotocamera, Video o Demo.</div>
+    <div class="hint" id="hint" hidden></div>
+  </section>
+
+  <section class="panel">
+    <div class="row">
+      <button class="primary" id="btnCam">Fotocamera</button>
+      <label class="filebtn" id="fileLbl">Video registrato<input type="file" id="file" accept="video/*"></label>
+      <button class="ball" id="btnDemo">Demo servizio</button>
+      <button id="btnPlay" hidden>Pausa</button>
+      <button id="btnStop">Ferma</button>
+    </div>
+    <div class="row" id="camRow" hidden>
+      <label class="inline" for="camSel">Obiettivo</label>
+      <select id="camSel"></select>
+    </div>
+    <div class="row" id="fileRow" hidden>
+      <label class="inline" for="rateSel">Velocità di analisi</label>
+      <select id="rateSel">
+        <option value="1">Normale</option>
+        <option value="0.5" selected>Metà (più preciso)</option>
+        <option value="0.25">Un quarto (video 120–240 fps)</option>
+      </select>
+      <label class="inline" for="slowSel">Il video è un ralenti?</label>
+      <select id="slowSel">
+        <option value="1" selected>No</option>
+        <option value="4">Sì, 120 fps rallentato ×4</option>
+        <option value="8">Sì, 240 fps rallentato ×8</option>
+      </select>
+    </div>
+    <p class="msg" id="msg"></p>
+  </section>
+
+  <section class="panel">
+    <div class="row" style="justify-content: space-between">
+      <h2>Ripresa e calibrazione</h2>
+      <div class="steps" id="steps"><span>1 Fondo</span><span>2 Servizio</span><span>3 Rete</span></div>
+    </div>
+    <div class="row">
+      <button class="primary" id="btnCal">Calibra il campo</button>
+      <button id="btnSkip" hidden>Salta questo punto</button>
+      <label class="inline" for="thr">Sensibilità
+        <input type="range" id="thr" min="20" max="120" step="5" value="45">
+      </label>
+      <label class="inline" for="ovl"><input type="checkbox" id="ovl" checked> Mostra tracciamento</label>
+    </div>
+    <div class="grid2">
+      <label for="lens">Obiettivo
+        <select id="lens">
+          <option value="ultra">0.5x ultra grandangolo</option>
+          <option value="wide">1x normale</option>
+          <option value="tele">2.5x teleobiettivo</option>
+        </select>
+      </label>
+      <label for="phoneH">Altezza del telefono da terra<select id="phoneH"></select></label>
+      <label for="serverH">Altezza di chi serve<select id="serverH"></select></label>
+      <label for="offset">Distanza dal segno centrale quando servi<select id="offset"></select></label>
+      <label for="sideDist">Distanza telefono – riga laterale del doppio<select id="sideDist"></select></label>
+    </div>
+    <p class="msg" id="geoInfo"></p>
+    <p class="msg">Con il telefono fermo, tocca sul video tre punti lungo il centro del campo: il segno centrale della linea di fondo, la T del servizio e la rete al centro. Il programma usa queste misure ufficiali (0 m, 5,49 m, 11,89 m) per convertire i pixel in metri, e con l'obiettivo scelto stima da solo quanto è lontano il telefono.</p>
+  </section>
+
+  <section class="panel">
+    <div class="row" style="justify-content: space-between">
+      <h2>Sessione</h2>
+      <button id="btnClear">Azzera</button>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>#</th><th>Uscita</th><th>A rete</th><th>Punti</th><th>Affidabilità</th><th>Ora</th></tr></thead>
+        <tbody id="hist"><tr><td colspan="6" class="muted">Nessun servizio misurato.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Come posizionare il telefono</summary>
+      <ol>
+        <li>Su un treppiede, in orizzontale, a 1,2–1,5 m da terra. Dritto (non inclinato in avanti né di lato) e rivolto dritto verso il campo.</li>
+        <li>Di lato al campo, più o meno all'altezza della metà campo del battitore. Linea di fondo e rete devono stare entrambe nel video.</li>
+        <li>Con l'obiettivo 1x serve stare a circa 4 m dalla riga laterale del doppio; con lo 0.5x basta anche meno di 1 m. Il 2.5x va bene solo da molto lontano (oltre 15 m dalla riga).</li>
+        <li>Imposta obiettivo e altezze, calibra, scegli metà e direzione, poi servi. La velocità compare appena la pallina passa la rete.</li>
+        <li>Se le due stime della distanza non coincidono, il telefono è probabilmente inclinato o l'obiettivo impostato è sbagliato.</li>
+      </ol>
+    </details>
+    <details>
+      <summary>Cosa misura e quanto è preciso</summary>
+      <ul>
+        <li>Il programma riconosce la pallina come piccolo oggetto in movimento rapido, ne segue la traiettoria lungo il campo e calcola la velocità con tutti i punti trovati.</li>
+        <li>Corregge la frenata dell'aria (circa il 20% persa entro la rete) e riporta la velocità in uscita dalla racchetta, come un radar.</li>
+        <li>Tiene conto della diagonale del servizio (metà, direzione e punto da cui servi) e dell'altezza d'impatto, stimata in 1,5 volte la tua altezza.</li>
+        <li>In simulazione l'errore è intorno al 1–3% con le impostazioni giuste; sbagliare la direzione può costare fino al 13%. Va ancora verificato in campo.</li>
+        <li>I calcoli avvengono solo sul telefono: il video non viene inviato da nessuna parte.</li>
+      </ul>
+    </details>
+  </section>
+</div>
+
+<script>
+/*CORE-START*/
+const Core = (() => {
+  const NET = 11.885, SERVICE = 5.485;
+  const K_DRAG = 0.0204;     // 1/m  = 0.5·ρ·Cd·A/m  (ρ 1.2, Cd 0.55, Ø 6.7 cm, 57 g)
+  const PATH_FACTOR = 1.02;  // real 3D path (diagonal + downward) vs along-court distance
+
+  function det3(m) {
+    return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  }
+  function solve3(A, y) {
+    const d = det3(A); if (Math.abs(d) < 1e-12) return null;
+    const out = [];
+    for (let k = 0; k < 3; k++) out.push(det3(A.map((row, i) => row.map((v, j) => (j === k ? y[i] : v)))) / d);
+    return out;
+  }
+  function linearMap(p, q) { const m = (q.x - p.x) / (q.u - p.u); return u => p.x + m * (u - p.u); }
+  // pts: [{u (0..1 image), x (metres from baseline)}], 2 or 3 points. 3 points → 1D projective (handles a slightly turned phone).
+  function fitMapping(pts) {
+    const s = pts.slice().sort((a, b) => a.x - b.x);
+    if (s.length < 3) return linearMap(s[0], s[s.length - 1]);
+    const sol = solve3(s.map(p => [p.u, 1, -p.u * p.x]), s.map(p => p.x));
+    const lin = linearMap(s[0], s[2]);
+    if (!sol) return lin;
+    const [a, b, c] = sol, f = u => (a * u + b) / (c * u + 1);
+    // reject if the pole falls near the court or the map is not monotonic
+    const lo = Math.min(s[0].u, s[2].u) - 0.25, hi = Math.max(s[0].u, s[2].u) + 0.25;
+    let prev = null, dir = Math.sign(f(s[2].u) - f(s[0].u));
+    for (let i = 0; i <= 40; i++) {
+      const u = lo + (hi - lo) * i / 40;
+      if (Math.abs(c * u + 1) < 0.05) return lin;
+      const x = f(u); if (prev !== null && Math.sign(x - prev) !== dir) return lin; prev = x;
+    }
+    return f;
+  }
+
+  // Double frame difference on RGBA frames: pixels that differ from BOTH previous frames = where a fast object is now.
+  // The calibration taps sit on the centre line, but a serve travels diagonally, nearer to or farther from the phone.
+  // side +1: server on the half nearer the phone (ball drifts away), −1: the farther half. dist: phone → centre line (m).
+  // Assumes the phone faces the court square-on, so the image centre marks the phone's own position along the court.
+  // targetY: where the ball lands across the court, measured from the centre line (T ≈ 0.5 m, box centre ≈ 2 m, wide ≈ 3.6 m).
+  // offset: how far from the centre mark the server stands. The ball crosses the centre line on its way to the other box.
+  const CONTACT_X = 0.3, BOUNCE_X = 15.1;  // contact just inside the baseline; bounce ~3.2 m past the net
+  function depthCorrectedMap(base, xc, dist, side, targetY, offset) {
+    if (!side || !(dist > 2)) return base;
+    const s = side, o = offset || 0, g = ((targetY || 2.06) + o) / (BOUNCE_X - CONTACT_X);
+    return u => {
+      const A = (base(u) - xc) / dist;
+      return (xc + A * (dist - s * o - CONTACT_X * s * g)) / (1 - A * s * g);
+    };
+  }
+
+  // iPhone 12 Pro Max lenses, 35 mm-equivalent focal lengths; 16:9 video spans the full 34.6 mm-equivalent width.
+  // f is in units of the image width: u = 0.5 + f·(x − xc)/depth. Stabilisation can crop the video, making f up to ~10% longer.
+  const LENSES = { ultra: { label: "0.5x", f: 13 / 34.6 }, wide: { label: "1x", f: 26 / 34.6 }, tele: { label: "2.5x", f: 65 / 34.6 } };
+
+  // Everything the speed calculation needs, from the three taps and the setup.
+  // st: { lens, aspect (H/W), phoneH, dist (0 = automatic), side (+1 near half, −1 far half), targetY, offset, serverH }
+  function geometry(calib, st) {
+    const base = fitMapping(calib), lens = LENSES[st.lens] || LENSES.wide;
+    const xc = base(0.5), e = 0.01, dxdu = (base(0.5 + e) - base(0.5 - e)) / (2 * e);
+    const distAuto = Math.abs(lens.f * dxdu);              // a level, square-on phone: du/dx = f / distance
+    // second, independent estimate: how far below the image centre the ground taps sit, given the phone's height
+    let distFromHeight = null;
+    const ground = calib.filter(p => p.x < NET - 1 && p.v != null && p.v > 0.52);
+    if (st.phoneH > 0 && st.aspect > 0 && ground.length) {
+      distFromHeight = ground.reduce((a, p) => a + lens.f * st.phoneH / ((p.v - 0.5) * st.aspect), 0) / ground.length;
+    }
+    const dist = st.dist > 0 ? st.dist : distAuto;
+    const offset = st.offset || 0, targetY = st.targetY || 2.06;
+    const contactH = st.serverH > 0 ? 1.5 * st.serverH : 2.6; // contact ≈ 1.5 × standing height (arm + racket)
+    const dx = BOUNCE_X - CONTACT_X, dy = targetY + offset;
+    const pathFactor = Math.sqrt(dx * dx + dy * dy + contactH * contactH) / dx;
+    const map = depthCorrectedMap(base, xc, dist, st.side, targetY, offset);
+    const mismatch = distFromHeight ? Math.abs(distFromHeight / distAuto - 1) : null;
+    return { map, xc, dist, distAuto, distFromHeight, mismatch, contactH, pathFactor };
+  }
+
+  function detectBlobs(cur, p1, p2, W, H, o) {
+    const n = W * H, thr = o.thr;
+    const mask = o.mask && o.mask.length === n ? o.mask : new Uint8Array(n);
+    const stack = o.stack && o.stack.length === n ? o.stack : new Int32Array(n);
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
+      const d1 = Math.abs(cur[j] - p1[j]) + Math.abs(cur[j + 1] - p1[j + 1]) + Math.abs(cur[j + 2] - p1[j + 2]);
+      if (d1 <= thr) { mask[i] = 0; continue; }
+      const d2 = Math.abs(cur[j] - p2[j]) + Math.abs(cur[j + 1] - p2[j + 1]) + Math.abs(cur[j + 2] - p2[j + 2]);
+      mask[i] = d2 > thr ? 1 : 0;
+    }
+    const blobs = []; let all = 0;
+    for (let i = 0; i < n; i++) {
+      if (mask[i] !== 1) continue;
+      let sp = 0; stack[sp++] = i; mask[i] = 2;
+      let area = 0, sx = 0, sy = 0, minx = W, maxx = 0, miny = H, maxy = 0;
+      while (sp) {
+        const p = stack[--sp], x = p % W, y = (p / W) | 0;
+        area++; sx += x; sy += y;
+        if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy; if (yy < 0 || yy >= H) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx; if (xx < 0 || xx >= W) continue;
+            const q = yy * W + xx; if (mask[q] === 1) { mask[q] = 2; stack[sp++] = q; }
+          }
+        }
+      }
+      all++;
+      if (area >= o.minArea && area <= o.maxArea && (maxx - minx) < W * 0.2 && (maxy - miny) < H * 0.2) {
+        blobs.push({ u: (sx / area + 0.5) / W, v: (sy / area + 0.5) / H, area });
+      }
+    }
+    // a flood of blobs means the camera moved or the lights flickered: trust nothing this frame
+    return { blobs: blobs.length > o.maxBlobs ? [] : blobs, noisy: blobs.length > o.maxBlobs, total: all };
+  }
+
+  function linreg(T, X) {
+    const n = T.length; let st = 0, sx = 0, stt = 0, stx = 0;
+    for (let i = 0; i < n; i++) { st += T[i]; sx += X[i]; stt += T[i] * T[i]; stx += T[i] * X[i]; }
+    const den = n * stt - st * st; if (Math.abs(den) < 1e-12) return null;
+    const slope = (n * stx - st * sx) / den, icpt = (sx - slope * st) / n;
+    let ss = 0; for (let i = 0; i < n; i++) { const r = X[i] - (slope * T[i] + icpt); ss += r * r; }
+    return { slope, icpt, rms: Math.sqrt(ss / n) };
+  }
+
+  // With v(x) = v0·e^(−kx): X = (e^(kx) − 1)/k grows linearly in time with slope v0 (speed at the baseline).
+  // The ball flies along a straight-ish 3D path that is pathFactor times longer than its run along the court,
+  // so along the court it slows as e^(−k·pf·x) and its real speed is pf times its speed along the court.
+  function evaluate(ptsIn, o) {
+    const pf = o.pathFactor || PATH_FACTOR, kx = K_DRAG * pf;
+    let pts = ptsIn.slice(), fit = null;
+    // keep the longest stretch without holes of more than ~3 frames (stray blobs tend to sit before or after one)
+    const longestRun = arr => {
+      if (!(o.frameDt > 0)) return arr;
+      let best = [0, 0], a = 0;
+      for (let i = 1; i <= arr.length; i++) {
+        if (i === arr.length || arr[i].t - arr[i - 1].t > 3.5 * o.frameDt) { if (i - a > best[1] - best[0]) best = [a, i]; a = i; }
+      }
+      return arr.slice(best[0], best[1]);
+    };
+    // fit, then drop the worst point while it sits more than 0.3 m off the line (a stray blob picked up on the way)
+    for (;;) {
+      pts = longestRun(pts);
+      if (pts.length < o.minPts) return null;
+      const t0 = pts[0].t, T = pts.map(p => p.t - t0), X = pts.map(p => (Math.exp(kx * p.x) - 1) / kx);
+      fit = linreg(T, X); if (!fit) return null;
+      let worst = -1, wr = 0.3;
+      for (let i = 0; i < pts.length; i++) { const r = Math.abs(X[i] - (fit.slope * T[i] + fit.icpt)); if (r > wr) { wr = r; worst = i; } }
+      if (worst < 0) break;
+      pts.splice(worst, 1);
+    }
+    const span = pts[pts.length - 1].x - pts[0].x; if (span < o.minSpan) return null;
+    if (pts[0].x > o.maxStartX) return null;   // a serve is seen leaving the baseline, not appearing mid-court
+    // a real ball shows up in most frames; a chain of stray blobs is patchy
+    if (o.frameDt > 0) {
+      const dur = pts[pts.length - 1].t - pts[0].t;
+      if (pts.length < 0.6 * (dur / o.frameDt + 1)) return null;
+      for (let i = 1; i < pts.length; i++) if (pts[i].t - pts[i - 1].t > 3.5 * o.frameDt) return null;
+    }
+    const v0 = fit.slope;
+    if (!(v0 >= o.vMin && v0 <= o.vMax * 1.3)) return null;
+    const kmh = v0 * 3.6 * pf;
+    const atNet = kmh * Math.exp(-kx * NET);
+    const quality = pts.length >= 8 && fit.rms < 0.2 ? "good" : pts.length >= 5 ? "warn" : "bad";
+    return { kmh, atNet, n: pts.length, span, rms: fit.rms, quality, pts: pts.slice(), t: pts[pts.length - 1].t };
+  }
+
+  class ServeTracker {
+    constructor(map, opt) {
+      this.map = map;
+      this.o = Object.assign({ vMin: 14, vMax: 75, minPts: 5, minSpan: 5, maxStartX: 4.5, maxGap: 0.13, cooldown: 0.8, hold: 0.3 }, opt || {});
+      this.tracks = []; this.lastHit = -1e9; this.lastCands = []; this.pending = null;
+    }
+    push(t, blobs) {
+      const o = this.o, cands = [];
+      if (this.prevT != null && t > this.prevT && t - this.prevT < 0.2) {
+        const d = t - this.prevT; o.frameDt = o.frameDt ? 0.9 * o.frameDt + 0.1 * d : d;
+      }
+      this.prevT = t;
+      for (const b of blobs) {
+        const x = this.map(b.u);
+        if (!isFinite(x) || x < -1.5 || x > NET + 0.6) continue;
+        cands.push({ t, x, u: b.u, v: b.v, area: b.area });
+      }
+      this.lastCands = cands;
+      const used = new Set(), grown = [];
+      for (const tr of this.tracks) {
+        const L = tr.pts[tr.pts.length - 1], dt = t - L.t; if (dt <= 0) continue;
+        let best = -1, bestErr = Infinity;
+        cands.forEach((c, i) => {
+          const dx = c.x - L.x; if (dx <= 0) return;
+          let err;
+          if (tr.pts.length === 1) {
+            const vx = dx / dt; if (vx < o.vMin || vx > o.vMax) return;
+            const ev = Math.abs(c.v - L.v); if (ev > 0.6 * Math.abs(c.u - L.u) + 0.03) return;
+            err = ev;
+          } else {
+            const P = tr.pts[tr.pts.length - 2], h = L.t - P.t;
+            const vx = (L.x - P.x) / h, vv = (L.v - P.v) / h;
+            const tolX = 0.6 + 0.3 * Math.abs(vx * dt), ex = Math.abs(c.x - (L.x + vx * dt));
+            if (ex > tolX) return;
+            const ev = Math.abs(c.v - (L.v + vv * dt)); if (ev > 0.04 + 0.5 * Math.abs(c.u - L.u)) return;
+            err = ex / tolX + ev * 10;
+          }
+          if (err < bestErr) { bestErr = err; best = i; }
+        });
+        // grow a copy and keep the original too: if the match was a stray blob (the ball missed this frame),
+        // the original can still pick the ball up on the next frame
+        if (best >= 0) { grown.push({ pts: tr.pts.concat([cands[best]]), start: tr.start }); used.add(best); }
+      }
+      // of all versions with the same first and last detection, keep only the longest
+      const byEnds = new Map();
+      for (const tr of this.tracks.concat(grown)) {
+        const F = tr.pts[0], L = tr.pts[tr.pts.length - 1];
+        let m = byEnds.get(F); if (!m) byEnds.set(F, (m = new Map()));
+        const cur = m.get(L); if (!cur || tr.pts.length > cur.pts.length) m.set(L, tr);
+      }
+      this.tracks = [];
+      for (const m of byEnds.values()) for (const tr of m.values()) this.tracks.push(tr);
+      // every candidate also seeds its own track, so a stray track that grabbed the ball cannot hide it
+      cands.forEach(c => { if (c.x < NET - 3) this.tracks.push({ pts: [c], start: t }); });
+      let result = null; const keep = [];
+      for (const tr of this.tracks) {
+        const L = tr.pts[tr.pts.length - 1];
+        const done = t - L.t > o.maxGap || L.x > NET - 0.3;
+        if (!done) { keep.push(tr); continue; }
+        const r = evaluate(tr.pts, o);
+        if (r && (!result || r.n > result.n || (r.n === result.n && r.rms < result.rms))) result = r;
+      }
+      this.tracks = keep.length > 400 ? keep.sort((a, b) => b.pts.length - a.pts.length).slice(0, 400) : keep;
+      // hold the best finished track briefly: the full ball track may still be finishing
+      if (result && result.t - this.lastHit >= o.cooldown) {
+        const p = this.pending;
+        if (!p || result.n > p.n || (result.n === p.n && result.rms < p.rms)) this.pending = result;
+      }
+      const p = this.pending;
+      if (p && t - p.t > o.hold) {
+        this.pending = null; this.lastHit = p.t; this.tracks = [];
+        return p;
+      }
+      return null;
+    }
+    activeTrack() {
+      let best = null;
+      for (const tr of this.tracks) if (tr.pts.length >= 2 && (!best || tr.pts.length > best.pts.length)) best = tr;
+      return best;
+    }
+  }
+
+  // Synthetic side-view serve: court-coloured background, sensor noise, a server, a racket swing and a ball streak.
+  function makeDemo(kmh, opt) {
+    const W = 480, H = 270, fps = (opt && opt.fps) || 60, frames = Math.round(fps * 1.4);
+    const v0 = kmh / 3.6 / PATH_FACTOR, uOf = x => 0.07 + 0.86 * x / NET + 0.012 * Math.sin(x / NET * Math.PI);
+    const mapPts = [{ u: uOf(0), x: 0 }, { u: uOf(SERVICE), x: SERVICE }, { u: uOf(NET), x: NET }];
+    const tHit = 0.35, x0 = 0.35;
+    const xAt = t => (t < tHit ? null : x0 + Math.log(1 + K_DRAG * v0 * (t - tHit)) / K_DRAG);
+    const vAt = x => 0.24 + 0.36 * (x / NET);
+    let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const bg = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const j = (y * W + x) * 4, floor = y > H * 0.66;
+      bg[j] = floor ? 46 : 70; bg[j + 1] = floor ? 92 : 78; bg[j + 2] = floor ? 150 : 96; bg[j + 3] = 255;
+      if (floor && Math.abs(y - H * 0.8) < 1) { bg[j] = bg[j + 1] = bg[j + 2] = 235; }
+      for (const xx of [0, SERVICE, NET]) if (floor && Math.abs(x - uOf(xx) * W) < 1) { bg[j] = bg[j + 1] = bg[j + 2] = 235; }
+      if (Math.abs(x - uOf(NET) * W) < 1.5 && y > H * 0.48) { bg[j] = bg[j + 1] = bg[j + 2] = 30; }
+    }
+    function paint(d, cx, cy, r, c) {
+      for (let y = Math.max(0, Math.floor(cy - r)); y <= Math.min(H - 1, Math.ceil(cy + r)); y++)
+        for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(W - 1, Math.ceil(cx + r)); x++)
+          if ((x - cx) ** 2 + (y - cy) ** 2 <= r * r) { const j = (y * W + x) * 4; d[j] = c[0]; d[j + 1] = c[1]; d[j + 2] = c[2]; }
+    }
+    function frame(i) {
+      const t = i / fps, d = new Uint8ClampedArray(bg);
+      for (let j = 0; j < d.length; j += 4) { const nz = (rnd() - 0.5) * 8; d[j] += nz; d[j + 1] += nz; d[j + 2] += nz; }
+      const px = uOf(-0.3) * W, sway = Math.sin(t * 3) * 2;           // server
+      for (let y = H * 0.36; y < H * 0.8; y += 1) for (let x = px - 9 + sway; x < px + 9 + sway; x += 1) paint(d, x, y, 0.8, [200, 120, 90]);
+      const ang = -2.2 + Math.min(1, Math.max(0, (t - 0.2) / 0.25)) * 3.2;  // racket arc
+      paint(d, px + Math.cos(ang) * 26, H * 0.36 + Math.sin(ang) * 26, 4, [30, 30, 30]);
+      const xs = xAt(t - 0.5 / fps), xe = xAt(t);                       // ball streak over half a frame of exposure
+      if (xe !== null && xe < NET + 1.5) {
+        const a = xs === null ? xe : xs, steps = 10;
+        for (let s = 0; s <= steps; s++) { const x = a + (xe - a) * s / steps; paint(d, uOf(x) * W, vAt(x) * H, 1.8, [215, 240, 85]); }
+      } else if (t < tHit) paint(d, px + 12, H * (0.2 + 0.25 * Math.abs(t - tHit) / tHit), 1.8, [215, 240, 85]);
+      return d;
+    }
+    return { W, H, fps, frames, mapPts, frame, kmh };
+  }
+
+  return { NET, SERVICE, K_DRAG, PATH_FACTOR, LENSES, fitMapping, depthCorrectedMap, geometry, detectBlobs, evaluate, ServeTracker, makeDemo };
+})();
+/*CORE-END*/
+
+(() => {
+  const $ = id => document.getElementById(id);
+  const video = $("video"), demoView = $("demoView"), overlay = $("overlay"), octx = overlay.getContext("2d");
+  const proc = document.createElement("canvas"), pctx = proc.getContext("2d", { willReadFrequently: true });
+  const store = {
+    get(k) { try { return JSON.parse(localStorage.getItem("radar." + k)); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem("radar." + k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
+  };
+  const S = {
+    mode: null, calib: store.get("calib"), calStep: -1, calPts: [], map: null, tracker: null,
+    ring: [], W: 480, H: 270, thr: 45, overlayOn: true, hist: store.get("hist") || [], lastT: -1,
+    fpsN: 0, fpsT: 0, fps: 0, lastRes: null, slow: 1, demoTimer: null, rvfc: null, raf: null, bufs: {}, wake: null, noisy: false,
+    geo: null,
+    set: Object.assign({ lens: "wide", phoneH: 1.3, serverH: 1.8, sideDist: -1, offset: 0.25, side: 1, targetY: 2.06 }, store.get("setup") || {})
+  };
+  const CAL_X = [0, Core.SERVICE, Core.NET], HALF_DOUBLES = 10.97 / 2;
+  const CAL_NAME = ["il segno centrale della linea di fondo", "la T del servizio", "la rete, al centro"];
+
+  function setStatus(text, cls) { const s = $("status"); s.textContent = text; s.className = "pill" + (cls ? " " + cls : ""); }
+  function msg(text, err) { const m = $("msg"); m.textContent = text || ""; m.className = "msg" + (err ? " err" : ""); }
+  function hint(text) { const h = $("hint"); h.hidden = !text; h.textContent = text || ""; }
+
+  function aspect() { return video.videoWidth ? video.videoHeight / video.videoWidth : 9 / 16; }
+  function buildMap() {
+    S.geo = null; S.map = null;
+    if (S.calib && S.calib.length >= 2) {
+      if (S.mode === "demo") S.map = Core.fitMapping(S.calib);
+      else {
+        // the engine works from the court's centre line: half the doubles width (5.485 m) + the gap to the phone
+        const dist = S.set.sideDist >= 0 ? S.set.sideDist + HALF_DOUBLES : 0;
+        S.geo = Core.geometry(S.calib, Object.assign({ aspect: aspect() }, S.set, { dist })); S.map = S.geo.map;
+      }
+    }
+    S.tracker = S.map ? new Core.ServeTracker(S.map, S.geo ? { pathFactor: S.geo.pathFactor } : null) : null;
+    renderSteps(); renderGeo();
+  }
+  function renderGeo() {
+    const el = $("geoInfo"), g = S.geo, f1 = v => v.toFixed(1).replace(".", ",");
+    if (!g) { el.className = "msg"; el.textContent = "Dopo la calibrazione qui compaiono la distanza stimata del telefono e l'altezza d'impatto."; return; }
+    let t = `Telefono a ${f1(g.dist - HALF_DOUBLES)} m dalla riga del doppio (${S.set.sideDist >= 0 ? "impostata" : "stimata dall'obiettivo"})`;
+    if (g.distFromHeight) t += `, dall'altezza del telefono risultano ${f1(g.distFromHeight - HALF_DOUBLES)} m`;
+    t += `. Impatto a circa ${f1(g.contactH)} m, percorso reale più lungo del ${f1((g.pathFactor - 1) * 100)}%.`;
+    const bad = g.mismatch != null && g.mismatch > 0.2;
+    if (bad) t += " Le due distanze non coincidono: controlla che il telefono sia dritto e che obiettivo e altezza siano giusti, oppure imposta la distanza a mano.";
+    el.className = "msg" + (bad ? " err" : ""); el.textContent = t;
+  }
+  function renderSteps() {
+    const spans = $("steps").children;
+    for (let i = 0; i < 3; i++) {
+      const done = S.calStep < 0 ? !!(S.calib && S.calib.some(p => p.x === CAL_X[i])) : S.calPts.some(p => p.x === CAL_X[i]);
+      spans[i].className = S.calStep === i ? "cur" : done ? "ok" : "";
+    }
+  }
+
+  // ---- sources
+  function stopAll() {
+    if (S.demoTimer) { clearInterval(S.demoTimer); S.demoTimer = null; }
+    if (S.rvfc != null && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(S.rvfc);
+    if (S.raf) cancelAnimationFrame(S.raf);
+    S.rvfc = S.raf = null;
+    const st = video.srcObject; if (st) st.getTracks().forEach(tr => tr.stop());
+    video.pause(); video.srcObject = null;
+    if (video.src) { URL.revokeObjectURL(video.src); video.removeAttribute("src"); video.load(); }
+    if (S.wake) { S.wake.release().catch(() => {}); S.wake = null; }
+    if (S.mode === "demo") { S.calib = store.get("calib"); buildMap(); }
+    S.mode = null; S.ring = []; S.lastT = -1;
+    video.hidden = true; demoView.hidden = true; $("empty").hidden = false;
+    $("btnPlay").hidden = true; $("fileRow").hidden = true;
+    setStatus("Fermo"); drawOverlay();
+  }
+  async function keepAwake() { try { if (navigator.wakeLock) S.wake = await navigator.wakeLock.request("screen"); } catch (e) { /* not allowed here */ } }
+
+  async function startCamera(deviceId) {
+    stopAll();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      msg("La fotocamera non è disponibile in questa pagina. Puoi usare un video registrato oppure aprire la versione live dal tuo indirizzo web.", true);
+      setStatus("Niente fotocamera", "err"); return;
+    }
+    const base = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } };
+    const vc = deviceId ? Object.assign({ deviceId: { exact: deviceId } }, base) : Object.assign({ facingMode: { ideal: "environment" } }, base);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: vc });
+      video.srcObject = stream; video.hidden = false; $("empty").hidden = true;
+      await video.play();
+      S.mode = "live";
+      const set = stream.getVideoTracks()[0].getSettings();
+      const devs = await listCameras(set.deviceId), want = lensDevice(devs, S.set.lens);
+      if (!deviceId && want && want.deviceId !== set.deviceId) return startCamera(want.deviceId);
+      const label = (devs.find(d => d.deviceId === set.deviceId) || {}).label;
+      msg(`Fotocamera attiva${label ? " (" + label + ")" : ""}: ${set.width || "?"}×${set.height || "?"}, ${Math.round(set.frameRate || 0) || "?"} fps richiesti.`
+        + (want ? "" : ` Non trovo l'obiettivo ${Core.LENSES[S.set.lens].label}: sceglilo a mano dal menu Fotocamera.`)
+        + (S.calib ? "" : " Ora calibra il campo."));
+      keepAwake(); startLoop();
+    } catch (e) {
+      msg("Non riesco ad aprire la fotocamera (" + (e.name || "errore") + "). In questa pagina potrebbe essere bloccata: usa un video registrato oppure la versione live dal tuo indirizzo web.", true);
+      setStatus("Niente fotocamera", "err");
+    }
+  }
+  async function listCameras(activeId) {
+    try {
+      const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+      const sel = $("camSel"); sel.innerHTML = "";
+      devs.forEach((d, i) => { const o = document.createElement("option"); o.value = d.deviceId; o.textContent = d.label || "Fotocamera " + (i + 1); if (d.deviceId === activeId) o.selected = true; sel.appendChild(o); });
+      $("camRow").hidden = devs.length < 2;
+      return devs;
+    } catch (e) { $("camRow").hidden = true; return []; }
+  }
+  // iPhone camera names: "Back Ultra Wide Camera", "Back Camera", "Back Telephoto Camera" (or the Italian equivalents).
+  // Skip the virtual "Dual"/"Triple" cameras, which switch lens by themselves.
+  function lensDevice(devs, lens) {
+    const L = d => d.label || "";
+    if (lens === "ultra") return devs.find(d => /ultra/i.test(L(d)));
+    if (lens === "tele") return devs.find(d => /tele/i.test(L(d)));
+    return devs.find(d => /back|rear|posterior|retro/i.test(L(d)) && !/ultra|tele|dual|triple|doppia|tripla/i.test(L(d)));
+  }
+
+  function startFile(file) {
+    stopAll();
+    video.src = URL.createObjectURL(file); video.hidden = false; $("empty").hidden = true;
+    S.mode = "file"; S.slow = Number($("slowSel").value) || 1;
+    $("fileRow").hidden = false; $("btnPlay").hidden = false; $("btnPlay").textContent = "Pausa";
+    video.onloadedmetadata = () => { buildMap(); video.playbackRate = Number($("rateSel").value) || 1; video.play().catch(() => {}); };
+    video.onended = () => { flush(); $("btnPlay").textContent = "Riproduci"; setStatus("Video finito"); };
+    msg(S.map ? "Analizzo il video…" : "Metti in pausa su un fotogramma nitido e calibra il campo, poi riparti dall'inizio.");
+    startLoop();
+  }
+
+  function startDemo() {
+    stopAll();
+    const kmh = Math.round(150 + Math.random() * 50), demo = Core.makeDemo(kmh);
+    S.mode = "demo"; S.calib = demo.mapPts; buildMap();
+    demoView.width = demo.W; demoView.height = demo.H; demoView.hidden = false; $("empty").hidden = true;
+    const dctx = demoView.getContext("2d"); let i = 0;
+    msg(`Demo: servizio simulato a ${kmh} km/h, 60 fps. Il programma non conosce questo numero e lo ricava dal video.`);
+    S.demoTimer = setInterval(() => {
+      if (i >= demo.frames) { flush(); stopDemoKeepView(); return; }
+      const data = demo.frame(i), img = new ImageData(data, demo.W, demo.H);
+      dctx.putImageData(img, 0, 0);
+      processFrame(i / demo.fps, data, demo.W, demo.H);
+      i++;
+    }, 1000 / demo.fps);
+  }
+  function stopDemoKeepView() { clearInterval(S.demoTimer); S.demoTimer = null; S.mode = null; setStatus("Demo finita"); S.calib = store.get("calib"); buildMap(); }
+
+  // ---- frame loop
+  function startLoop() {
+    S.ring = []; S.lastT = -1; buildMap();
+    const hasRVFC = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+    if (hasRVFC) {
+      const cb = (now, meta) => { onVideoFrame(now, meta); if (S.mode === "live" || S.mode === "file") S.rvfc = video.requestVideoFrameCallback(cb); };
+      S.rvfc = video.requestVideoFrameCallback(cb);
+    } else {
+      const loop = now => { onVideoFrame(now, null); if (S.mode === "live" || S.mode === "file") S.raf = requestAnimationFrame(loop); };
+      S.raf = requestAnimationFrame(loop);
+    }
+  }
+  function onVideoFrame(now, meta) {
+    if (!video.videoWidth || video.paused && S.mode === "file") { drawOverlay(); return; }
+    let t;
+    if (S.mode === "file") t = (meta && meta.mediaTime != null ? meta.mediaTime : video.currentTime) / S.slow;
+    else if (meta && meta.captureTime) t = meta.captureTime / 1000;
+    else if (meta && meta.mediaTime > 0) t = meta.mediaTime;
+    else t = now / 1000;
+    if (t === S.lastT) return;
+    const W = 480, H = Math.round(480 * video.videoHeight / video.videoWidth);
+    if (proc.width !== W || proc.height !== H) { proc.width = W; proc.height = H; S.ring = []; }
+    pctx.drawImage(video, 0, 0, W, H);
+    processFrame(t, pctx.getImageData(0, 0, W, H).data, W, H);
+  }
+  function processFrame(t, data, W, H) {
+    if (t <= S.lastT) S.ring = [];               // video looped or was rewound
+    S.lastT = t; S.W = W; S.H = H;
+    S.ring.push(data); if (S.ring.length > 3) S.ring.shift();
+    S.fpsN++; if (t - S.fpsT >= 1 || t < S.fpsT) { S.fps = S.fpsN / Math.max(1e-3, t - S.fpsT); S.fpsN = 0; S.fpsT = t; }
+    let blobs = [];
+    if (S.ring.length === 3) {
+      const n = W * H;
+      if (!S.bufs.mask || S.bufs.mask.length !== n) S.bufs = { mask: new Uint8Array(n), stack: new Int32Array(n) };
+      const k = (W / 480) ** 2;
+      const r = Core.detectBlobs(S.ring[2], S.ring[1], S.ring[0], W, H,
+        { thr: S.thr, minArea: 2, maxArea: 260 * k, maxBlobs: 60, mask: S.bufs.mask, stack: S.bufs.stack });
+      blobs = r.blobs; S.noisy = r.noisy;
+    }
+    if (S.calStep >= 0) setStatus("Calibrazione");
+    else if (!S.tracker) setStatus("Da calibrare", "err");
+    else setStatus((S.noisy ? "Immagine instabile · " : "In ascolto · ") + (S.fps ? Math.round(S.fps) + " fps" : ""), S.noisy ? "err" : "on");
+    S.lastBlobs = blobs;
+    if (S.tracker && S.calStep < 0) {
+      const res = S.tracker.push(t, blobs);
+      if (res) showResult(res);
+    }
+    drawOverlay();
+  }
+  function flush() { if (S.tracker && S.lastT >= 0) { const res = S.tracker.push(S.lastT + 1, []); if (res) showResult(res); } drawOverlay(); }
+
+  // ---- results
+  function fmt(v) { return Math.round(v).toString(); }
+  function showResult(r) {
+    S.lastRes = r;
+    const sp = $("speed"); sp.innerHTML = fmt(r.kmh) + "<small>km/h</small>";
+    sp.classList.remove("flash"); void sp.offsetWidth; sp.classList.add("flash");
+    const ql = { good: ["good", "Buona"], warn: ["warn", "Discreta"], bad: ["bad", "Bassa"] }[r.quality];
+    $("detail").innerHTML = `<span class="q ${ql[0]}">${ql[1]}</span>A rete circa ${fmt(r.atNet)} km/h · ${r.n} posizioni su ${r.span.toFixed(1)} m`;
+    if (S.mode !== "demo") {
+      S.hist.unshift({ kmh: r.kmh, atNet: r.atNet, n: r.n, q: r.quality, at: Date.now() });
+      S.hist = S.hist.slice(0, 200); store.set("hist", S.hist);
+    }
+    renderHist();
+  }
+  function renderHist() {
+    const tb = $("hist"), h = S.hist;
+    $("count").textContent = h.length;
+    $("best").textContent = h.length ? fmt(Math.max(...h.map(x => x.kmh))) : "—";
+    $("avg").textContent = h.length ? fmt(h.reduce((a, x) => a + x.kmh, 0) / h.length) : "—";
+    if (!h.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">Nessun servizio misurato. I risultati della demo non vengono salvati.</td></tr>'; return; }
+    const ql = { good: "Buona", warn: "Discreta", bad: "Bassa" };
+    tb.innerHTML = h.map((x, i) => `<tr><td>${h.length - i}</td><td class="num">${fmt(x.kmh)}</td><td>${fmt(x.atNet)}</td><td>${x.n}</td><td>${ql[x.q] || "—"}</td><td>${new Date(x.at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</td></tr>`).join("");
+  }
+
+  // ---- overlay
+  function viewEl() { return S.mode === "demo" || !demoView.hidden ? demoView : video; }
+  function drawOverlay() {
+    const r = overlay.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    if (overlay.width !== Math.round(r.width * dpr) || overlay.height !== Math.round(r.height * dpr)) { overlay.width = Math.round(r.width * dpr); overlay.height = Math.round(r.height * dpr); }
+    octx.setTransform(1, 0, 0, 1, 0, 0); octx.clearRect(0, 0, overlay.width, overlay.height);
+    const box = contentBox(); if (!box) return;
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const X = u => box.x + u * box.w, Y = v => box.y + v * box.h;
+    const pts = S.calStep >= 0 ? S.calPts : (S.calib || []);
+    octx.font = "600 12px Inter, system-ui, sans-serif";
+    pts.forEach(p => {
+      const i = CAL_X.indexOf(p.x);
+      octx.strokeStyle = "rgba(255,255,255,.75)"; octx.setLineDash([6, 5]); octx.lineWidth = 1.5;
+      octx.beginPath(); octx.moveTo(X(p.u), box.y); octx.lineTo(X(p.u), box.y + box.h); octx.stroke(); octx.setLineDash([]);
+      octx.fillStyle = "rgba(10,16,24,.75)"; const label = ["Fondo 0 m", "Servizio 5,49 m", "Rete 11,89 m"][i] || "";
+      const w = octx.measureText(label).width + 10; octx.fillRect(X(p.u) - w / 2, box.y + box.h - 24, w, 18);
+      octx.fillStyle = "#fff"; octx.textAlign = "center"; octx.fillText(label, X(p.u), box.y + box.h - 11);
+      if (p.v != null) { octx.fillStyle = "#d4ef4a"; octx.beginPath(); octx.arc(X(p.u), Y(p.v), 5, 0, Math.PI * 2); octx.fill(); }
+    });
+    if (!S.overlayOn) return;
+    (S.lastBlobs || []).forEach(b => { octx.strokeStyle = "rgba(255,255,255,.55)"; octx.lineWidth = 1; octx.beginPath(); octx.arc(X(b.u), Y(b.v), 6, 0, Math.PI * 2); octx.stroke(); });
+    const tr = S.tracker && S.tracker.activeTrack();
+    if (tr) drawTrack(tr.pts, "#ffd23f", X, Y);
+    if (S.lastRes && S.lastT - S.lastRes.t < 2.5 && S.lastT >= S.lastRes.t) drawTrack(S.lastRes.pts, "#45c27a", X, Y);
+  }
+  function drawTrack(pts, color, X, Y) {
+    octx.strokeStyle = color; octx.fillStyle = color; octx.lineWidth = 2.5;
+    octx.beginPath(); pts.forEach((p, i) => (i ? octx.lineTo(X(p.u), Y(p.v)) : octx.moveTo(X(p.u), Y(p.v)))); octx.stroke();
+    pts.forEach(p => { octx.beginPath(); octx.arc(X(p.u), Y(p.v), 3.5, 0, Math.PI * 2); octx.fill(); });
+  }
+  // where the picture actually sits inside the 16:9 stage (object-fit: contain)
+  function contentBox() {
+    const el = viewEl(); if (el.hidden) return null;
+    const vw = el === video ? video.videoWidth : demoView.width, vh = el === video ? video.videoHeight : demoView.height;
+    if (!vw || !vh) return null;
+    const r = overlay.getBoundingClientRect(), s = Math.min(r.width / vw, r.height / vh);
+    const w = vw * s, h = vh * s; return { x: (r.width - w) / 2, y: (r.height - h) / 2, w, h };
+  }
+
+  // ---- calibration
+  function startCal() {
+    if (!S.mode || S.mode === "demo") { msg("Avvia prima la fotocamera o un video, poi calibra.", true); return; }
+    S.calStep = 0; S.calPts = []; $("btnSkip").hidden = true; $("btnCal").textContent = "Annulla";
+    hint("Tocca " + CAL_NAME[0]); renderSteps(); drawOverlay();
+  }
+  function endCal(save) {
+    if (save) {
+      S.calib = S.calPts.slice(); store.set("calib", S.calib); buildMap();
+      msg("Campo calibrato. Servi: la velocità compare quando la pallina passa la metà campo.");
+    }
+    S.calStep = -1; S.calPts = []; hint(""); $("btnSkip").hidden = true; $("btnCal").textContent = "Calibra il campo"; renderSteps(); drawOverlay();
+  }
+  function nextCal() {
+    S.calStep++;
+    if (S.calStep > 2) { endCal(true); return; }
+    $("btnSkip").hidden = S.calStep !== 1;
+    hint("Tocca " + CAL_NAME[S.calStep] + (S.calStep === 1 ? " (se non si vede, salta)" : ""));
+    renderSteps();
+  }
+  overlay.addEventListener("pointerup", e => {
+    if (S.calStep < 0) return;
+    const box = contentBox(); if (!box) return;
+    const r = overlay.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+    const u = (px - box.x) / box.w, v = (py - box.y) / box.h; if (u < 0 || u > 1 || v < 0 || v > 1) return;
+    if (S.calPts.some(p => Math.abs(p.u - u) < 0.02)) { hint("Troppo vicino al punto precedente: tocca " + CAL_NAME[S.calStep]); return; }
+    S.calPts.push({ u, v, x: CAL_X[S.calStep] }); nextCal(); drawOverlay();
+  });
+
+  // ---- controls
+  $("btnCam").onclick = () => startCamera();
+  $("camSel").onchange = e => startCamera(e.target.value);
+  $("file").onchange = e => { const f = e.target.files[0]; if (f) startFile(f); e.target.value = ""; };
+  $("btnDemo").onclick = startDemo;
+  $("btnStop").onclick = () => { endCal(false); stopAll(); msg(""); };
+  $("btnPlay").onclick = () => {
+    if (video.paused) { if (video.ended) { video.currentTime = 0; S.ring = []; } video.playbackRate = Number($("rateSel").value) || 1; video.play(); $("btnPlay").textContent = "Pausa"; }
+    else { video.pause(); $("btnPlay").textContent = "Riproduci"; }
+  };
+  $("rateSel").onchange = e => { video.playbackRate = Number(e.target.value) || 1; };
+  $("slowSel").onchange = e => { S.slow = Number(e.target.value) || 1; S.ring = []; buildMap(); };
+  $("btnCal").onclick = () => (S.calStep >= 0 ? endCal(false) : startCal());
+  $("btnSkip").onclick = () => nextCal();
+  $("thr").oninput = e => { S.thr = Number(e.target.value); };
+  // ---- setup: dropdowns and the quick per-serve buttons
+  const it = v => v.toFixed(2).replace(/0$/, "").replace(".", ",");
+  const OPTS = {
+    phoneH: Array.from({ length: 11 }, (_, i) => [(10 + i) / 10, it((10 + i) / 10) + " m"]),
+    serverH: Array.from({ length: 51 }, (_, i) => [(150 + i) / 100, (150 + i) + " cm"]),
+    offset: [0, 0.25, 0.5, 0.75, 1, 1.5, 2].map(v => [v, v ? it(v) + " m" : "Sul segno centrale"]),
+    sideDist: [[-1, "Automatica (dall'obiettivo)"], [0, "Sulla riga"]].concat([0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 10, 12, 15].map(v => [v, it(v) + " m"]))
+  };
+  for (const [id, list] of Object.entries(OPTS)) {
+    const sel = $(id);
+    list.forEach(([v, label]) => { const o = document.createElement("option"); o.value = String(v); o.textContent = label; sel.appendChild(o); });
+  }
+  function renderSet() {
+    for (const id of ["lens", "phoneH", "serverH", "offset", "sideDist"]) $(id).value = String(S.set[id]);
+    document.querySelectorAll(".seg").forEach(g => g.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.v) === S.set[g.dataset.key]))));
+  }
+  function saveSet() { store.set("setup", S.set); renderSet(); buildMap(); }
+  for (const id of ["phoneH", "serverH", "offset", "sideDist"]) $(id).onchange = e => { S.set[id] = Number(e.target.value); saveSet(); };
+  $("lens").onchange = e => { S.set.lens = e.target.value; saveSet(); if (S.mode === "live") startCamera(); };
+  document.querySelectorAll(".seg").forEach(g => g.addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    S.set[g.dataset.key] = Number(b.dataset.v); saveSet();
+  }));
+  renderSet();
+  $("ovl").onchange = e => { S.overlayOn = e.target.checked; drawOverlay(); };
+  $("btnClear").onclick = () => { S.hist = []; store.set("hist", []); renderHist(); };
+  new ResizeObserver(drawOverlay).observe(overlay);
+
+  buildMap(); renderHist();
+  // open in a working state: run the simulated serve once
+  startDemo();
+})();
+</script>
+</body>
+</html>
