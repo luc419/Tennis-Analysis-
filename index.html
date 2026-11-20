@@ -216,6 +216,16 @@ details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap
   </section>
 
   <section class="panel">
+    <h2>Opzioni</h2>
+    <div class="row">
+      <label class="inline" for="colorFilter"><input type="checkbox" id="colorFilter"> Filtro colore pallina</label>
+      <label class="inline" for="voice"><input type="checkbox" id="voice"> Annuncio vocale</label>
+      <button id="btnVoiceTest">Prova la voce</button>
+    </div>
+    <p class="msg">Il filtro colore tiene solo gli oggetti giallo-verdi come la pallina e scarta mani, braccia, magliette e ombre. Se con poca luce la pallina smette di essere vista, spegnilo. L'annuncio vocale dice velocità ed errore dopo ogni servizio, e avvisa se un servizio non è stato misurato o se il telefono si è mosso.</p>
+  </section>
+
+  <section class="panel">
     <div class="row" style="justify-content: space-between">
       <h2>Sessione</h2>
       <button id="btnClear">Azzera</button>
@@ -349,10 +359,11 @@ const Core = (() => {
     for (let i = 0; i < n; i++) {
       if (mask[i] !== 1) continue;
       let sp = 0; stack[sp++] = i; mask[i] = 2;
-      let area = 0, sx = 0, sy = 0, minx = W, maxx = 0, miny = H, maxy = 0;
+      let area = 0, sx = 0, sy = 0, minx = W, maxx = 0, miny = H, maxy = 0, dR = 0, dG = 0, dB = 0, cG = 0, cB = 0;
       while (sp) {
-        const p = stack[--sp], x = p % W, y = (p / W) | 0;
+        const p = stack[--sp], x = p % W, y = (p / W) | 0, j = p * 4;
         area++; sx += x; sy += y;
+        if (o.color) { dR += cur[j] - p1[j]; dG += cur[j + 1] - p1[j + 1]; dB += cur[j + 2] - p1[j + 2]; cG += cur[j + 1]; cB += cur[j + 2]; }
         if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y;
         for (let dy = -1; dy <= 1; dy++) {
           const yy = y + dy; if (yy < 0 || yy >= H) continue;
@@ -364,6 +375,12 @@ const Core = (() => {
       }
       all++;
       if (area >= o.minArea && area <= o.maxArea && (maxx - minx) < W * 0.2 && (maxy - miny) < H * 0.2) {
+        // colour filter: what appeared here must push the picture toward yellow-green (blue drops versus red/green,
+        // green keeps up with red) and the pixel itself must be clearly less blue than green. Rules out skin, white, dark.
+        if (o.color) {
+          const r = dR / area, g = dG / area, b = dB / area;
+          if (!(Math.max(r, g) - b > 20 && g >= 0.6 * r - 10 && (cG - cB) / area > 25)) continue;
+        }
         blobs.push({ u: (sx / area + 0.5) / W, v: (sy / area + 0.5) / H, area });
       }
     }
@@ -381,12 +398,25 @@ const Core = (() => {
     return { slope, icpt, rms: Math.sqrt(ss / n), se };
   }
 
+  // How far the points sit from a smooth curve in the picture's vertical direction (a thrown ball follows one; stray blobs don't).
+  function vWobble(pts) {
+    if (pts.length < 4) return Infinity;
+    const t0 = pts[0].t; let s = [0, 0, 0, 0, 0], sv = [0, 0, 0];
+    for (const p of pts) { const t = p.t - t0; let tk = 1; for (let k = 0; k < 5; k++) { s[k] += tk; if (k < 3) sv[k] += tk * p.v; tk *= t; } }
+    const c = solve3([[s[0], s[1], s[2]], [s[1], s[2], s[3]], [s[2], s[3], s[4]]], sv); if (!c) return Infinity;
+    let ss = 0; for (const p of pts) { const t = p.t - t0, r = p.v - (c[0] + c[1] * t + c[2] * t * t); ss += r * r; }
+    return Math.sqrt(ss / pts.length);
+  }
+  const MAX_WOBBLE = 0.012;   // ≈ 3 pixels at 270 px of height
+
   // With v(x) = v0·e^(−kx): X = (e^(kx) − 1)/k grows linearly in time with slope v0 (speed at the baseline).
   // The ball flies along a straight-ish 3D path that is pathFactor times longer than its run along the court,
   // so along the court it slows as e^(−k·pf·x) and its real speed is pf times its speed along the court.
   function evaluate(ptsIn, o) {
     const pf = o.pathFactor || PATH_FACTOR, kx = K_DRAG * pf;
     let pts = ptsIn.slice(), fit = null;
+    o._why = null;                       // why a track was turned down, for the "serve not measured" message
+    const no = why => { o._why = why; return null; };
     // keep the longest stretch without holes of more than ~3 frames (stray blobs tend to sit before or after one)
     const longestRun = arr => {
       if (!(o.frameDt > 0)) return arr;
@@ -399,24 +429,28 @@ const Core = (() => {
     // fit, then drop the worst point while it sits more than 0.3 m off the line (a stray blob picked up on the way)
     for (;;) {
       pts = longestRun(pts);
-      if (pts.length < o.minPts) return null;
+      if (pts.length < o.minPts) return no("pochi");
       const t0 = pts[0].t, T = pts.map(p => p.t - t0), X = pts.map(p => (Math.exp(kx * p.x) - 1) / kx);
-      fit = linreg(T, X); if (!fit) return null;
-      let worst = -1, wr = 0.3;
+      fit = linreg(T, X); if (!fit) return no("pochi");
+      let worst = -1, wr = 0.2;
       for (let i = 0; i < pts.length; i++) { const r = Math.abs(X[i] - (fit.slope * T[i] + fit.icpt)); if (r > wr) { wr = r; worst = i; } }
       if (worst < 0) break;
       pts.splice(worst, 1);
     }
-    const span = pts[pts.length - 1].x - pts[0].x; if (span < o.minSpan) return null;
-    if (pts[0].x > o.maxStartX) return null;   // a serve is seen leaving the baseline, not appearing mid-court
+    // short tracks must be extra clean: a handful of stray blobs can line up by chance, many cannot
+    const short = pts.length < 7;
+    if (vWobble(pts) > (short ? 0.5 : 1) * MAX_WOBBLE) return no("irregolare");
+    if (short && fit.rms > 0.12) return no("irregolare");
+    const span = pts[pts.length - 1].x - pts[0].x; if (span < o.minSpan) return no("corto");
+    if (pts[0].x > o.maxStartX) return no("tardi");   // a serve is seen leaving the baseline, not appearing mid-court
     // a real ball shows up in most frames; a chain of stray blobs is patchy
     if (o.frameDt > 0) {
       const dur = pts[pts.length - 1].t - pts[0].t;
-      if (pts.length < 0.6 * (dur / o.frameDt + 1)) return null;
-      for (let i = 1; i < pts.length; i++) if (pts[i].t - pts[i - 1].t > 3.5 * o.frameDt) return null;
+      if (pts.length < 0.6 * (dur / o.frameDt + 1)) return no("buchi");
+      for (let i = 1; i < pts.length; i++) if (pts[i].t - pts[i - 1].t > 3.5 * o.frameDt) return no("buchi");
     }
     const v0 = fit.slope;
-    if (!(v0 >= o.vMin && v0 <= o.vMax * 1.3)) return null;
+    if (!(v0 >= o.vMin && v0 <= o.vMax * 1.3)) return no("velocita");
     const kmh = v0 * 3.6 * pf;
     const atNet = kmh * Math.exp(-kx * NET);
     const quality = pts.length >= 8 && fit.rms < 0.2 ? "good" : pts.length >= 5 ? "warn" : "bad";
@@ -477,24 +511,40 @@ const Core = (() => {
       for (const m of byEnds.values()) for (const tr of m.values()) this.tracks.push(tr);
       // every candidate also seeds its own track, so a stray track that grabbed the ball cannot hide it
       cands.forEach(c => { if (c.x < NET - 3) this.tracks.push({ pts: [c], start: t }); });
-      let result = null; const keep = [];
+      let result = null, miss = null; const keep = [];
       for (const tr of this.tracks) {
         const L = tr.pts[tr.pts.length - 1];
         const done = t - L.t > o.maxGap || L.x > NET - 0.3;
         if (!done) { keep.push(tr); continue; }
         const r = evaluate(tr.pts, o);
-        if (r && (!result || r.n > result.n || (r.n === result.n && r.rms < result.rms))) result = r;
+        if (r) { if (!result || r.n > result.n || (r.n === result.n && r.rms < result.rms)) result = r; continue; }
+        // a fast, straight, serve-like track that still failed the checks: probably a serve we could not measure
+        if (tr.pts.length >= 6 && ["pochi", "corto", "tardi", "buchi"].includes(o._why)) {
+          const a = tr.pts[0], vx = (L.x - a.x) / Math.max(1e-3, L.t - a.t);
+          const fit = linreg(tr.pts.map(p => p.t - a.t), tr.pts.map(p => p.x));
+          if (L.x - a.x >= 3 && vx >= o.vMin && vx <= o.vMax * 1.3 && fit && fit.rms < 0.25 && vWobble(tr.pts) < 0.7 * MAX_WOBBLE && (!miss || tr.pts.length > miss.n)) {
+            miss = { why: o._why, n: tr.pts.length, t: L.t };
+          }
+        }
       }
       this.tracks = keep.length > 400 ? keep.sort((a, b) => b.pts.length - a.pts.length).slice(0, 400) : keep;
       // hold the best finished track briefly: the full ball track may still be finishing
       if (result && result.t - this.lastHit >= o.cooldown) {
         const p = this.pending;
         if (!p || result.n > p.n || (result.n === p.n && result.rms < p.rms)) this.pending = result;
+        this.miss = null;
       }
+      if (miss && !this.pending && miss.t > this.lastHit + 1 && miss.t > (this.lastMiss || -1e9) + 4 && (!this.miss || miss.n > this.miss.n)) this.miss = miss;
       const p = this.pending;
       if (p && t - p.t > o.hold) {
-        this.pending = null; this.lastHit = p.t; this.tracks = [];
+        this.pending = null; this.miss = null; this.lastHit = p.t; this.tracks = [];
         return p;
+      }
+      // nothing measured within 0.8 s of a serve-like track: report it once, with the reason
+      const m = this.miss;
+      if (m && !this.pending && t - m.t > 0.8) {
+        this.miss = null; this.lastMiss = m.t; this.tracks = [];
+        return { missed: true, why: m.why, n: m.n, t: m.t };
       }
       return null;
     }
@@ -636,7 +686,34 @@ const Core = (() => {
     ring: [], W: 480, H: 270, thr: 45, overlayOn: true, hist: store.get("hist") || [], lastT: -1,
     fpsN: 0, fpsT: 0, fps: 0, lastRes: null, slow: 1, demoTimer: null, rvfc: null, raf: null, bufs: {}, wake: null, noisy: false,
     geo: null, geoIn: null, corr: null, tilt: null, calTilt: store.get("calTilt"), moved: false,
-    set: Object.assign({ lens: "wide", phoneH: 1.3, serverH: 1.8, sideDist: -1, offset: 0.25, side: 1, targetY: 2.06, levelFix: true }, store.get("setup") || {})
+    set: Object.assign({ lens: "wide", phoneH: 1.3, serverH: 1.8, sideDist: -1, offset: 0.25, side: 1, targetY: 2.06, levelFix: true,
+      colorFilter: false, voice: false }, store.get("setup") || {})
+  };
+
+  // ---- spoken announcements (Safari's built-in voice; iPhone only lets it speak after a tap)
+  const voice = {
+    ok: typeof window.speechSynthesis !== "undefined" && typeof window.SpeechSynthesisUtterance !== "undefined",
+    lastWarn: {},
+    unlock() { if (!this.ok) return; try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch (e) { /* no voice */ } },
+    say(text, force) {
+      if (!this.ok || (!S.set.voice && !force)) return;
+      try {
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text); u.lang = "it-IT"; u.rate = 1.05;
+        const it = speechSynthesis.getVoices().find(v => /^it/i.test(v.lang)); if (it) u.voice = it;
+        speechSynthesis.speak(u);
+      } catch (e) { /* no voice */ }
+    },
+    warn(key, text, gapMs) {   // the same warning at most once every gapMs
+      const now = Date.now(); if (now - (this.lastWarn[key] || 0) < gapMs) return;
+      this.lastWarn[key] = now; this.say(text);
+    }
+  };
+  const WHY = {
+    pochi: "la pallina si è vista in pochi fotogrammi. Prova ad aumentare la sensibilità",
+    corto: "la traiettoria vista è troppo corta. Controlla che si vedano linea di fondo e rete",
+    tardi: "la pallina si è vista solo da metà campo. Controlla che si veda la linea di fondo",
+    buchi: "la pallina è stata persa per troppi fotogrammi. Prova ad aumentare la sensibilità"
   };
 
   // ---- motion sensor: live tilt of the phone
@@ -846,7 +923,7 @@ const Core = (() => {
       if (!S.bufs.mask || S.bufs.mask.length !== n) S.bufs = { mask: new Uint8Array(n), stack: new Int32Array(n) };
       const k = (W / 480) ** 2;
       const r = Core.detectBlobs(S.ring[2], S.ring[1], S.ring[0], W, H,
-        { thr: S.thr, minArea: 2, maxArea: 260 * k, maxBlobs: 60, mask: S.bufs.mask, stack: S.bufs.stack });
+        { thr: S.thr, minArea: 2, maxArea: 260 * k, maxBlobs: 60, mask: S.bufs.mask, stack: S.bufs.stack, color: !!S.set.colorFilter && S.mode !== "demo" });
       blobs = r.blobs; S.noisy = r.noisy;
     }
     if (S.calStep >= 0) setStatus("Calibrazione");
@@ -856,9 +933,10 @@ const Core = (() => {
     if (S.tracker && S.calStep < 0) {
       const fixed = S.corr ? blobs.map(b => Object.assign({ ru: b.u, rv: b.v, area: b.area }, S.corr(b.u, b.v))) : blobs;
       const res = S.tracker.push(t, fixed);
-      if (res) showResult(res);
+      if (res && res.missed) showMiss(res); else if (res) showResult(res);
     }
-    if (S.mode === "live" && S.moved && S.tracker) setStatus("Telefono mosso: ricalibra", "err");
+    if (S.mode === "live" && S.moved && S.tracker) { setStatus("Telefono mosso: ricalibra", "err"); voice.warn("moved", "Telefono mosso. Ricalibra il campo.", 20000); }
+    if (S.mode === "live" && S.noisy && S.tracker) voice.warn("noisy", "Immagine instabile. Riduci la sensibilità.", 30000);
     renderLevel();
     drawOverlay();
   }
@@ -875,11 +953,17 @@ const Core = (() => {
     sp.classList.remove("flash"); void sp.offsetWidth; sp.classList.add("flash");
     const ql = { good: ["good", "Buona"], warn: ["warn", "Discreta"], bad: ["bad", "Bassa"] }[r.quality];
     $("detail").innerHTML = `<span class="q ${ql[0]}">${ql[1]}</span>A rete ${fmt(r.atNet)} ${pm(u ? u.atNet : 0)} km/h · ${r.n} posizioni su ${r.span.toFixed(1)} m`;
+    voice.say(Math.round(r.kmh) + " chilometri orari" + (u ? ", più o meno " + Math.max(1, Math.round(u.kmh)) : ""));
     if (S.mode !== "demo") {
       S.hist.unshift({ kmh: r.kmh, atNet: r.atNet, ek: u ? u.kmh : null, en: u ? u.atNet : null, n: r.n, q: r.quality, at: Date.now() });
       S.hist = S.hist.slice(0, 200); store.set("hist", S.hist);
     }
     renderHist();
+  }
+  function showMiss(r) {
+    const text = WHY[r.why] || "la traiettoria non era abbastanza chiara";
+    $("detail").innerHTML = `<span class="q bad">Non misurato</span>Servizio visto ma non misurato: ${text}.`;
+    voice.say("Servizio non misurato: " + text + ".");
   }
   function renderHist() {
     const tb = $("hist"), h = S.hist;
@@ -971,7 +1055,21 @@ const Core = (() => {
   });
 
   // ---- controls
-  $("btnCam").onclick = () => { startTilt(); startCamera(); };
+  $("btnCam").onclick = () => { startTilt(); if (S.set.voice) voice.unlock(); startCamera(); };
+  for (const id of ["colorFilter", "voice"]) {
+    $(id).checked = !!S.set[id];
+    $(id).onchange = e => {
+      S.set[id] = e.target.checked; store.set("setup", S.set);
+      if (id === "voice" && e.target.checked) {
+        if (!voice.ok) { msg("Questo browser non ha la sintesi vocale.", true); return; }
+        voice.unlock(); voice.say("Annuncio vocale attivo.");
+      }
+    };
+  }
+  $("btnVoiceTest").onclick = () => {
+    if (!voice.ok) { msg("Questo browser non ha la sintesi vocale.", true); return; }
+    voice.unlock(); voice.say("Centottantadue chilometri orari, più o meno sei", true);
+  };
   $("levelFix").checked = S.set.levelFix !== false;
   $("levelFix").onchange = e => { S.set.levelFix = e.target.checked; store.set("setup", S.set); buildMap(); };
   $("camSel").onchange = e => startCamera(e.target.value);
