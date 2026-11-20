@@ -76,6 +76,10 @@ h2 { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0; 
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
 .grid2 label { display: grid; gap: 4px; font-size: 13px; font-weight: 500; color: var(--muted); }
 .grid2 select { width: 100%; }
+.cliplist { display: flex; flex-wrap: wrap; gap: 8px; }
+.clipitem { font-variant-numeric: tabular-nums; font-weight: 500; min-height: 40px; padding: 8px 12px; }
+.clipviewer { display: grid; gap: 10px; }
+.clipviewer canvas { width: 100%; max-width: 100%; border-radius: 10px; background: #000; display: block; }
 .stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 16 / 9; max-width: 100%; }
 .stage video, .stage canvas.view { display: block; width: 100%; height: 100%; object-fit: contain; }
 .stage canvas.overlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: manipulation; }
@@ -236,6 +240,38 @@ details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap
         <tbody id="hist"><tr><td colspan="6" class="muted">Nessun servizio misurato.</td></tr></tbody>
       </table>
     </div>
+  </section>
+
+  <section class="panel">
+    <div class="row" style="justify-content: space-between">
+      <h2>Clip dei servizi</h2>
+      <div class="row">
+        <label class="inline" for="clips"><input type="checkbox" id="clips" checked> Salva una clip per ogni servizio</label>
+        <button id="clipsClear">Elimina tutte</button>
+      </div>
+    </div>
+    <div class="cliplist" id="clipList"></div>
+    <div id="clipViewer" class="clipviewer" hidden>
+      <canvas id="clipCanvas"></canvas>
+      <div class="row">
+        <button id="cvPrev">◀ Fotogramma</button>
+        <button id="cvPlay" class="primary">Riproduci</button>
+        <button id="cvNext">Fotogramma ▶</button>
+        <label class="inline" for="cvSpeed">Velocità</label>
+        <select id="cvSpeed">
+          <option value="1">Reale</option>
+          <option value="0.25" selected>Rallentata ×4</option>
+          <option value="0.1">Rallentata ×10</option>
+        </select>
+      </div>
+      <div class="row">
+        <button id="cvShare">Salva o condividi il video</button>
+        <button id="cvDelete">Elimina</button>
+        <button id="cvClose">Chiudi</button>
+      </div>
+      <p class="msg" id="cvInfo"></p>
+    </div>
+    <p class="msg">Per ogni servizio, misurato o no, vengono salvati 3 secondi: circa 2 di preparazione prima del colpo e quasi uno di volo della pallina, con la traiettoria trovata. Nel visore il tempo è segnato rispetto al colpo (negativo = preparazione). Restano solo su questo telefono (le ultime 30). Se un servizio viene misurato male, mandami la sua clip.</p>
   </section>
 
   <section class="panel">
@@ -687,7 +723,7 @@ const Core = (() => {
     fpsN: 0, fpsT: 0, fps: 0, lastRes: null, slow: 1, demoTimer: null, rvfc: null, raf: null, bufs: {}, wake: null, noisy: false,
     geo: null, geoIn: null, corr: null, tilt: null, calTilt: store.get("calTilt"), moved: false,
     set: Object.assign({ lens: "wide", phoneH: 1.3, serverH: 1.8, sideDist: -1, offset: 0.25, side: 1, targetY: 2.06, levelFix: true,
-      colorFilter: false, voice: false }, store.get("setup") || {})
+      colorFilter: false, voice: false, clips: true }, store.get("setup") || {})
   };
 
   // ---- spoken announcements (Safari's built-in voice; iPhone only lets it speak after a tap)
@@ -802,13 +838,14 @@ const Core = (() => {
     if (S.demoTimer) { clearInterval(S.demoTimer); S.demoTimer = null; }
     if (S.rvfc != null && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(S.rvfc);
     if (S.raf) cancelAnimationFrame(S.raf);
+    clearInterval(S.watch); S.watch = null;
     S.rvfc = S.raf = null;
     const st = video.srcObject; if (st) st.getTracks().forEach(tr => tr.stop());
     video.pause(); video.srcObject = null;
     if (video.src) { URL.revokeObjectURL(video.src); video.removeAttribute("src"); video.load(); }
     if (S.wake) { S.wake.release().catch(() => {}); S.wake = null; }
     if (S.mode === "demo") { S.calib = store.get("calib"); buildMap(); }
-    S.mode = null; S.ring = []; S.lastT = -1;
+    S.mode = null; resetDetection(); S.lastT = -1; clip.ring = []; clip.pending = null;
     video.hidden = true; demoView.hidden = true; $("empty").hidden = false;
     $("btnPlay").hidden = true; $("fileRow").hidden = true;
     setStatus("Fermo"); drawOverlay();
@@ -865,7 +902,7 @@ const Core = (() => {
     S.mode = "file"; S.slow = Number($("slowSel").value) || 1;
     $("fileRow").hidden = false; $("btnPlay").hidden = false; $("btnPlay").textContent = "Pausa";
     video.onloadedmetadata = () => { buildMap(); video.playbackRate = Number($("rateSel").value) || 1; video.play().catch(() => {}); };
-    video.onended = () => { flush(); $("btnPlay").textContent = "Riproduci"; setStatus("Video finito"); };
+    video.onended = () => { flush(() => { $("btnPlay").textContent = "Riproduci"; setStatus("Video finito"); }); };
     msg(S.map ? "Analizzo il video…" : "Metti in pausa su un fotogramma nitido e calibra il campo, poi riparti dall'inizio.");
     startLoop();
   }
@@ -878,24 +915,29 @@ const Core = (() => {
     const dctx = demoView.getContext("2d"); let i = 0;
     msg(`Demo: servizio simulato a ${kmh} km/h, 60 fps. Il programma non conosce questo numero e lo ricava dal video.`);
     S.demoTimer = setInterval(() => {
-      if (i >= demo.frames) { flush(); stopDemoKeepView(); return; }
+      if (i >= demo.frames) { clearInterval(S.demoTimer); S.demoTimer = null; flush(stopDemoKeepView); return; }
       const data = demo.frame(i), img = new ImageData(data, demo.W, demo.H);
       dctx.putImageData(img, 0, 0);
       processFrame(i / demo.fps, data, demo.W, demo.H);
       i++;
     }, 1000 / demo.fps);
   }
-  function stopDemoKeepView() { clearInterval(S.demoTimer); S.demoTimer = null; S.mode = null; setStatus("Demo finita"); S.calib = store.get("calib"); buildMap(); }
+  function stopDemoKeepView() { if (S.mode !== "demo") return; clearInterval(S.demoTimer); S.demoTimer = null; S.mode = null; setStatus("Demo finita"); S.calib = store.get("calib"); buildMap(); }
 
   // ---- frame loop
   function startLoop() {
-    S.ring = []; S.lastT = -1; buildMap();
+    resetDetection(); S.lastT = -1; buildMap();
+    // safety net: if the browser stops handing over frames, fetch the current one ourselves
+    clearInterval(S.watch); S.lastCb = performance.now();
+    S.watch = setInterval(() => {
+      if ((S.mode === "live" || S.mode === "file") && !video.paused && performance.now() - S.lastCb > 250) onVideoFrame(performance.now(), null);
+    }, 33);
     const hasRVFC = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
     if (hasRVFC) {
-      const cb = (now, meta) => { onVideoFrame(now, meta); if (S.mode === "live" || S.mode === "file") S.rvfc = video.requestVideoFrameCallback(cb); };
+      const cb = (now, meta) => { S.lastCb = performance.now(); onVideoFrame(now, meta); if (S.mode === "live" || S.mode === "file") S.rvfc = video.requestVideoFrameCallback(cb); };
       S.rvfc = video.requestVideoFrameCallback(cb);
     } else {
-      const loop = now => { onVideoFrame(now, null); if (S.mode === "live" || S.mode === "file") S.raf = requestAnimationFrame(loop); };
+      const loop = now => { S.lastCb = performance.now(); onVideoFrame(now, null); if (S.mode === "live" || S.mode === "file") S.raf = requestAnimationFrame(loop); };
       S.raf = requestAnimationFrame(loop);
     }
   }
@@ -908,24 +950,56 @@ const Core = (() => {
     else t = now / 1000;
     if (t === S.lastT) return;
     const W = 480, H = Math.round(480 * video.videoHeight / video.videoWidth);
-    if (proc.width !== W || proc.height !== H) { proc.width = W; proc.height = H; S.ring = []; }
+    if (proc.width !== W || proc.height !== H) { proc.width = W; proc.height = H; resetDetection(); }
     pctx.drawImage(video, 0, 0, W, H);
     processFrame(t, pctx.getImageData(0, 0, W, H).data, W, H);
+    clipFrame(t);
   }
+  // ---- ball detection in a background thread, so the camera loop keeps its frame rate; main thread as a fallback
+  const det = { worker: null, busy: 0, gen: 0 };
+  try {
+    const src = "const detectBlobs = " + Core.detectBlobs.toString() + ";\n" +
+      "let ring = [], bufs = null, gen = -1;\n" +
+      "onmessage = e => {\n" +
+      "  const m = e.data; if (m.gen !== gen) { ring = []; gen = m.gen; }\n" +
+      "  ring.push(new Uint8ClampedArray(m.buf)); if (ring.length > 3) ring.shift();\n" +
+      "  let out = { blobs: [], noisy: false };\n" +
+      "  if (ring.length === 3) {\n" +
+      "    const n = m.W * m.H; if (!bufs || bufs.mask.length !== n) bufs = { mask: new Uint8Array(n), stack: new Int32Array(n) };\n" +
+      "    out = detectBlobs(ring[2], ring[1], ring[0], m.W, m.H, Object.assign({}, m.opts, bufs));\n" +
+      "  }\n" +
+      "  postMessage({ t: m.t, gen: m.gen, blobs: out.blobs, noisy: out.noisy });\n" +
+      "};\n";
+    det.worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+    det.worker.onmessage = e => { det.busy = Math.max(0, det.busy - 1); if (e.data.gen === det.gen) handleDetections(e.data.t, e.data.blobs, e.data.noisy); };
+    det.worker.onerror = () => { det.worker = null; det.busy = 0; };
+  } catch (e) { det.worker = null; }
+  function resetDetection() { det.gen++; S.ring = []; }
+  function whenIdle(fn) { if (det.busy > 0) setTimeout(() => whenIdle(fn), 20); else fn(); }
+
   function processFrame(t, data, W, H) {
-    if (t <= S.lastT) S.ring = [];               // video looped or was rewound
+    if (t <= S.lastT) resetDetection();          // video looped or was rewound
     S.lastT = t; S.W = W; S.H = H;
-    S.ring.push(data); if (S.ring.length > 3) S.ring.shift();
     S.fpsN++; if (t - S.fpsT >= 1 || t < S.fpsT) { S.fps = S.fpsN / Math.max(1e-3, t - S.fpsT); S.fpsN = 0; S.fpsT = t; }
-    let blobs = [];
+    const opts = { thr: S.thr, minArea: 2, maxArea: 260 * (W / 480) ** 2, maxBlobs: 60, color: !!S.set.colorFilter && S.mode !== "demo" };
+    if (det.worker) {
+      if (det.busy > 2) return;                 // falling behind: skip this frame rather than pile up
+      det.busy++;
+      det.worker.postMessage({ t, W, H, buf: data.buffer, opts, gen: det.gen }, [data.buffer]);
+      return;
+    }
+    S.ring.push(data); if (S.ring.length > 3) S.ring.shift();
+    let blobs = [], noisy = false;
     if (S.ring.length === 3) {
       const n = W * H;
       if (!S.bufs.mask || S.bufs.mask.length !== n) S.bufs = { mask: new Uint8Array(n), stack: new Int32Array(n) };
-      const k = (W / 480) ** 2;
-      const r = Core.detectBlobs(S.ring[2], S.ring[1], S.ring[0], W, H,
-        { thr: S.thr, minArea: 2, maxArea: 260 * k, maxBlobs: 60, mask: S.bufs.mask, stack: S.bufs.stack, color: !!S.set.colorFilter && S.mode !== "demo" });
-      blobs = r.blobs; S.noisy = r.noisy;
+      const r = Core.detectBlobs(S.ring[2], S.ring[1], S.ring[0], W, H, Object.assign({ mask: S.bufs.mask, stack: S.bufs.stack }, opts));
+      blobs = r.blobs; noisy = r.noisy;
     }
+    handleDetections(t, blobs, noisy);
+  }
+  function handleDetections(t, blobs, noisy) {
+    S.noisy = noisy;
     if (S.calStep >= 0) setStatus("Calibrazione");
     else if (!S.tracker) setStatus("Da calibrare", "err");
     else setStatus((S.noisy ? "Immagine instabile · " : "In ascolto · ") + (S.fps ? Math.round(S.fps) + " fps" : ""), S.noisy ? "err" : "on");
@@ -933,14 +1007,187 @@ const Core = (() => {
     if (S.tracker && S.calStep < 0) {
       const fixed = S.corr ? blobs.map(b => Object.assign({ ru: b.u, rv: b.v, area: b.area }, S.corr(b.u, b.v))) : blobs;
       const res = S.tracker.push(t, fixed);
-      if (res && res.missed) showMiss(res); else if (res) showResult(res);
+      if (res) onTrackerResult(res);
     }
     if (S.mode === "live" && S.moved && S.tracker) { setStatus("Telefono mosso: ricalibra", "err"); voice.warn("moved", "Telefono mosso. Ricalibra il campo.", 20000); }
     if (S.mode === "live" && S.noisy && S.tracker) voice.warn("noisy", "Immagine instabile. Riduci la sensibilità.", 30000);
     renderLevel();
     drawOverlay();
   }
-  function flush() { if (S.tracker && S.lastT >= 0) { const res = S.tracker.push(S.lastT + 1, []); if (res) showResult(res); } drawOverlay(); }
+  function onTrackerResult(res) {
+    if (res.missed) showMiss(res); else showResult(res);
+    clipEvent(res.missed ? { why: res.why, pts: [], t: res.t } : { kmh: res.kmh, pts: res.pts });
+  }
+  // end of a video or of the demo: wait for the detector, then let the tracker report what it still holds
+  function flush(after) {
+    whenIdle(() => {
+      if (S.tracker && S.lastT >= 0) { const res = S.tracker.push(S.lastT + 1, []); if (res) onTrackerResult(res); }
+      drawOverlay(); if (after) after();
+    });
+  }
+
+  // ---- clips: the last 2 s of small frames are kept in memory; when a serve is reported they are saved as JPEGs
+  // a clip is 3 s: about 2.2 s of preparation before the hit and 0.8 s of flight after it
+  const CLIP_W = 320, CLIP_LEN = 3.0, CLIP_AFTER = 0.8, CLIP_SECONDS = 3.3, CLIP_MAX = 30;
+  const clip = { c: document.createElement("canvas"), ctx: null, ring: [], pending: null, busy: false, view: null };
+  clip.ctx = clip.c.getContext("2d", { willReadFrequently: true });
+  function clipFrame(t) {
+    if (!S.set.clips || !video.videoWidth) return;
+    const W = CLIP_W, H = Math.round(CLIP_W * video.videoHeight / video.videoWidth);
+    if (clip.c.width !== W || clip.c.height !== H) { clip.c.width = W; clip.c.height = H; clip.ring = []; }
+    if (clip.ring.length && t <= clip.ring[clip.ring.length - 1].t) clip.ring = [];
+    clip.ctx.drawImage(video, 0, 0, W, H);
+    clip.ring.push({ t, img: clip.ctx.getImageData(0, 0, W, H) });
+    while (clip.ring.length && t - clip.ring[0].t > CLIP_SECONDS) clip.ring.shift();
+    if (clip.pending && t >= clip.pending.until) { const p = clip.pending; clip.pending = null; saveClip(p.info, clip.ring.slice()); }
+  }
+  function clipEvent(info) {
+    if (!S.set.clips || (S.mode !== "live" && S.mode !== "file") || clip.busy) return;
+    // the hit is just before the first point of the ball's track; without a track, centre on where the serve was seen
+    const hit = info.pts && info.pts.length ? info.pts[0].t : (info.t != null ? info.t - 0.3 : S.lastT - 0.6);
+    const end = hit + CLIP_AFTER;
+    clip.pending = { until: Math.max(S.lastT, end), info: Object.assign({ hit, end }, info) };
+  }
+  const idbReq = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  let idbP = null;
+  function idb() {
+    if (!idbP) idbP = new Promise((res, rej) => {
+      try {
+        const r = indexedDB.open("radar-servizio", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("clips", { keyPath: "id", autoIncrement: true });
+        r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      } catch (e) { rej(e); }
+    });
+    return idbP;
+  }
+  const clipStore = async mode => (await idb()).transaction("clips", mode).objectStore("clips");
+  async function clipsAll() { return (await idbReq((await clipStore("readonly")).getAll())).sort((a, b) => b.id - a.id); }
+  async function clipDelete(id) { await idbReq((await clipStore("readwrite")).delete(id)); }
+  async function saveClip(info, frames) {
+    frames = frames.filter(f => f.t >= info.end - CLIP_LEN - 1e-6 && f.t <= info.end + 1e-6);
+    if (!frames.length) return;
+    clip.busy = true;
+    try {
+      const enc = document.createElement("canvas"), w = frames[0].img.width, h = frames[0].img.height;
+      enc.width = w; enc.height = h; const ectx = enc.getContext("2d");
+      const out = [];
+      for (const f of frames) {
+        ectx.putImageData(f.img, 0, 0);
+        const blob = await new Promise(res => enc.toBlob(res, "image/jpeg", 0.72));
+        if (blob) out.push({ t: f.t, blob });
+        await new Promise(r => setTimeout(r, 0));   // let the camera loop run between frames
+      }
+      const rec = {
+        at: Date.now(), kmh: info.kmh != null ? info.kmh : null, why: info.why || null, w, h, frames: out, hit: info.hit,
+        track: (info.pts || []).map(p => ({ t: p.t, u: p.ru != null ? p.ru : p.u, v: p.rv != null ? p.rv : p.v })),
+        calib: (S.calib || []).map(p => ({ u: p.u, v: p.v, x: p.x }))
+      };
+      await idbReq((await clipStore("readwrite")).add(rec));
+      const all = await clipsAll();
+      for (const c of all.slice(CLIP_MAX)) await clipDelete(c.id);
+      renderClips();
+    } catch (e) { msg("Non riesco a salvare la clip su questo telefono (" + (e && e.name || "errore") + ").", true); }
+    clip.busy = false;
+  }
+  async function renderClips() {
+    const box = $("clipList");
+    let all = [];
+    try { all = await clipsAll(); } catch (e) { box.innerHTML = '<p class="msg">Le clip non si possono salvare in questa pagina.</p>'; return; }
+    if (!all.length) { box.innerHTML = '<p class="msg">Nessuna clip. Ne viene salvata una per ogni servizio, misurato o no.</p>'; return; }
+    box.innerHTML = "";
+    all.forEach(c => {
+      const b = document.createElement("button"); b.className = "clipitem";
+      const time = new Date(c.at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      b.textContent = time + " · " + (c.kmh != null ? Math.round(c.kmh) + " km/h" : "non misurato");
+      b.onclick = () => openClip(c);
+      box.appendChild(b);
+    });
+  }
+  // viewer: frame by frame or slowed down, with the detected track and the calibration lines drawn on top
+  async function openClip(c) {
+    closeClip();
+    $("clipViewer").hidden = false; $("cvInfo").textContent = "Carico la clip…";
+    const frames = [];
+    for (const f of c.frames) { try { frames.push({ t: f.t, bmp: await createImageBitmap(f.blob) }); } catch (e) { /* skip a bad frame */ } }
+    if (!frames.length) { $("cvInfo").textContent = "Questa clip non si può aprire."; return; }
+    const cv = $("clipCanvas"); cv.width = c.w * 2; cv.height = c.h * 2;
+    clip.view = { c, frames, i: 0, playing: false, raf: null };
+    drawClip();
+    $("clipViewer").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  function closeClip() {
+    if (clip.view) { clip.view.playing = false; cancelAnimationFrame(clip.view.raf); clip.view.frames.forEach(f => f.bmp.close && f.bmp.close()); }
+    clip.view = null; $("clipViewer").hidden = true; $("cvPlay").textContent = "Riproduci";
+  }
+  function drawClipFrame(ctx, view, i, W, H) {
+    const f = view.frames[i], t0 = view.frames[0].t;
+    ctx.drawImage(f.bmp, 0, 0, W, H);
+    ctx.strokeStyle = "rgba(255,255,255,.7)"; ctx.setLineDash([6, 5]); ctx.lineWidth = 1.5;
+    view.c.calib.forEach(p => { ctx.beginPath(); ctx.moveTo(p.u * W, 0); ctx.lineTo(p.u * W, H); ctx.stroke(); });
+    ctx.setLineDash([]);
+    const seen = view.c.track.filter(p => p.t <= f.t + 1e-6);
+    if (seen.length) {
+      ctx.strokeStyle = "#45c27a"; ctx.fillStyle = "#45c27a"; ctx.lineWidth = 3;
+      ctx.beginPath(); seen.forEach((p, k) => (k ? ctx.lineTo(p.u * W, p.v * H) : ctx.moveTo(p.u * W, p.v * H))); ctx.stroke();
+      seen.forEach(p => { ctx.beginPath(); ctx.arc(p.u * W, p.v * H, 4, 0, Math.PI * 2); ctx.fill(); });
+    }
+    ctx.fillStyle = "rgba(10,16,24,.75)"; ctx.fillRect(0, 0, W, 30);
+    ctx.fillStyle = "#fff"; ctx.font = "600 18px Inter, system-ui, sans-serif"; ctx.textAlign = "left";
+    const label = view.c.kmh != null ? Math.round(view.c.kmh) + " km/h" : "Non misurato";
+    // time from the hit: negative = preparation, positive = ball in flight
+    const rel = view.c.hit != null ? f.t - view.c.hit : f.t - t0;
+    const when = view.c.hit != null ? `${rel >= 0 ? "+" : "−"}${Math.abs(rel).toFixed(2).replace(".", ",")} s dal colpo` : `${rel.toFixed(2).replace(".", ",")} s`;
+    ctx.fillText(`${label} · fotogramma ${i + 1}/${view.frames.length} · ${when}`, 10, 21);
+  }
+  function drawClip() {
+    const v = clip.view; if (!v) return;
+    const cv = $("clipCanvas"); drawClipFrame(cv.getContext("2d"), v, v.i, cv.width, cv.height);
+    const why = v.c.why ? " Motivo: " + (WHY[v.c.why] || v.c.why) + "." : "";
+    $("cvInfo").textContent = `Verde: la traiettoria usata per il calcolo. Linee tratteggiate: la calibrazione.${why}`;
+  }
+  function playClip() {
+    const v = clip.view; if (!v) return;
+    if (v.playing) { v.playing = false; cancelAnimationFrame(v.raf); $("cvPlay").textContent = "Riproduci"; return; }
+    if (v.i >= v.frames.length - 1) v.i = 0;
+    v.playing = true; $("cvPlay").textContent = "Pausa";
+    const speed = Number($("cvSpeed").value) || 0.25, start = performance.now(), base = v.frames[v.i].t;
+    const step = now => {
+      if (!v.playing) return;
+      const tv = base + (now - start) / 1000 * speed;
+      while (v.i < v.frames.length - 1 && v.frames[v.i + 1].t <= tv) v.i++;
+      drawClip();
+      if (v.i >= v.frames.length - 1) { v.playing = false; $("cvPlay").textContent = "Riproduci"; return; }
+      v.raf = requestAnimationFrame(step);
+    };
+    v.raf = requestAnimationFrame(step);
+  }
+  // turn the clip (with the drawings) into a video file, at the chosen speed, then share or save it
+  async function exportClip() {
+    const v = clip.view; if (!v) return;
+    const cv = document.createElement("canvas"); cv.width = v.c.w * 2; cv.height = v.c.h * 2;
+    if (!cv.captureStream || typeof MediaRecorder === "undefined") { $("cvInfo").textContent = "Questo browser non sa creare un video dalla clip."; return; }
+    const type = ["video/mp4", "video/webm"].find(m => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || "";
+    const rec = new MediaRecorder(cv.captureStream(30), type ? { mimeType: type } : undefined), parts = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+    const done = new Promise(r => { rec.onstop = r; });
+    const ctx = cv.getContext("2d"), speed = Number($("cvSpeed").value) || 0.25;
+    $("cvInfo").textContent = "Creo il video…";
+    drawClipFrame(ctx, v, 0, cv.width, cv.height); rec.start();
+    for (let i = 0; i < v.frames.length; i++) {
+      drawClipFrame(ctx, v, i, cv.width, cv.height);
+      const dt = i < v.frames.length - 1 ? (v.frames[i + 1].t - v.frames[i].t) / speed : 0.5;
+      await new Promise(r => setTimeout(r, Math.max(10, dt * 1000)));
+    }
+    rec.stop(); await done;
+    const ext = (rec.mimeType || type).includes("mp4") ? "mp4" : "webm";
+    const stamp = new Date(v.c.at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).replace(/\D/g, "");
+    const file = new File(parts, `servizio-${stamp}.${ext}`, { type: rec.mimeType || type || "video/mp4" });
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file] }); $("cvInfo").textContent = "Video pronto."; return; }
+    } catch (e) { if (e && e.name === "AbortError") { $("cvInfo").textContent = "Condivisione annullata."; return; } }
+    const a = document.createElement("a"); a.href = URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+    $("cvInfo").textContent = "Video salvato (" + file.name + ").";
+  }
 
   // ---- results
   function fmt(v) { return Math.round(v).toString(); }
@@ -1056,7 +1303,20 @@ const Core = (() => {
 
   // ---- controls
   $("btnCam").onclick = () => { startTilt(); if (S.set.voice) voice.unlock(); startCamera(); };
-  for (const id of ["colorFilter", "voice"]) {
+  $("cvPlay").onclick = playClip;
+  $("cvPrev").onclick = () => { const v = clip.view; if (v && v.i > 0) { v.i--; drawClip(); } };
+  $("cvNext").onclick = () => { const v = clip.view; if (v && v.i < v.frames.length - 1) { v.i++; drawClip(); } };
+  $("cvClose").onclick = closeClip;
+  $("cvShare").onclick = () => { exportClip().catch(() => { $("cvInfo").textContent = "Non sono riuscito a creare il video."; }); };
+  $("cvDelete").onclick = async () => { const v = clip.view; if (!v) return; await clipDelete(v.c.id).catch(() => {}); closeClip(); renderClips(); };
+  $("clipsClear").onclick = async () => {
+    const b = $("clipsClear");
+    if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "Tocca di nuovo per eliminare tutte"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Elimina tutte"; }, 4000); return; }
+    b.dataset.armed = ""; b.textContent = "Elimina tutte"; closeClip();
+    try { for (const c of await clipsAll()) await clipDelete(c.id); } catch (e) { /* nothing stored */ }
+    renderClips();
+  };
+  for (const id of ["colorFilter", "voice", "clips"]) {
     $(id).checked = !!S.set[id];
     $(id).onchange = e => {
       S.set[id] = e.target.checked; store.set("setup", S.set);
@@ -1077,11 +1337,11 @@ const Core = (() => {
   $("btnDemo").onclick = startDemo;
   $("btnStop").onclick = () => { endCal(false); stopAll(); msg(""); };
   $("btnPlay").onclick = () => {
-    if (video.paused) { if (video.ended) { video.currentTime = 0; S.ring = []; } video.playbackRate = Number($("rateSel").value) || 1; video.play(); $("btnPlay").textContent = "Pausa"; }
+    if (video.paused) { if (video.ended) { video.currentTime = 0; resetDetection(); } video.playbackRate = Number($("rateSel").value) || 1; video.play(); $("btnPlay").textContent = "Pausa"; }
     else { video.pause(); $("btnPlay").textContent = "Riproduci"; }
   };
   $("rateSel").onchange = e => { video.playbackRate = Number(e.target.value) || 1; };
-  $("slowSel").onchange = e => { S.slow = Number(e.target.value) || 1; S.ring = []; buildMap(); };
+  $("slowSel").onchange = e => { S.slow = Number(e.target.value) || 1; resetDetection(); buildMap(); };
   $("btnCal").onclick = () => (S.calStep >= 0 ? endCal(false) : startCal());
   $("btnSkip").onclick = () => nextCal();
   // slider to the right = more sensitive = lower colour-difference threshold
@@ -1114,7 +1374,18 @@ const Core = (() => {
   $("btnClear").onclick = () => { S.hist = []; store.set("hist", []); renderHist(); };
   new ResizeObserver(drawOverlay).observe(overlay);
 
-  buildMap(); renderHist();
+  // read-only snapshot for troubleshooting from the browser console: radarDebug()
+  window.radarDebug = () => ({
+    mode: S.mode, t: S.lastT, fps: Math.round(S.fps), worker: !!det.worker, busy: det.busy, blobs: (S.lastBlobs || []).length,
+    tracks: S.tracker ? S.tracker.tracks.length : null, longest: S.tracker && S.tracker.activeTrack() ? S.tracker.activeTrack().pts.map(p => +p.x.toFixed(2)) : [],
+    map: S.map ? [0, 0.25, 0.5, 0.75, 1].map(u => +S.map(u).toFixed(2)) : null, clipFrames: clip.ring.length, clipBusy: clip.busy
+  });
+  buildMap(); renderHist(); renderClips();
+  // works without internet once opened (only on the real web address: not available inside claude.ai)
+  const onOwnSite = location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  if ("serviceWorker" in navigator && onOwnSite && !/claude\.ai$|claudeusercontent\.com$|anthropic\.com$/.test(location.hostname)) {
+    navigator.serviceWorker.register("sw.js").catch(() => { /* offline mode unavailable */ });
+  }
   // open in a working state: run the simulated serve once
   startDemo();
 })();
