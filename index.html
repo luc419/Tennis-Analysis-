@@ -80,6 +80,9 @@ h2 { font-family: var(--display); font-weight: 600; font-size: 20px; margin: 0; 
 .stage video, .stage canvas.view { display: block; width: 100%; height: 100%; object-fit: contain; }
 .stage canvas.overlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: manipulation; }
 .stage .hint { position: absolute; left: 10px; right: 10px; top: 10px; padding: 8px 12px; border-radius: 8px; background: rgba(10, 16, 24, .78); color: #fff; font-size: 14px; font-weight: 500; pointer-events: none; }
+.stage .level { position: absolute; left: 10px; bottom: 10px; padding: 6px 10px; border-radius: 8px; background: rgba(10, 16, 24, .78); color: #fff; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; display: flex; gap: 8px; align-items: center; }
+.stage .level i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.speed .pm { font-size: .3em; font-weight: 600; color: var(--muted); margin-left: 8px; letter-spacing: .02em; }
 .stage .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: #c9d3dd; padding: 20px; font-size: 14px; }
 
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: grid; gap: 12px; }
@@ -149,6 +152,7 @@ details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap
     <canvas id="overlay" class="overlay"></canvas>
     <div class="empty" id="empty">Nessuna sorgente video.<br>Scegli Fotocamera, Video o Demo.</div>
     <div class="hint" id="hint" hidden></div>
+    <div class="level" id="level" hidden></div>
   </section>
 
   <section class="panel">
@@ -189,9 +193,10 @@ details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap
       <button class="primary" id="btnCal">Calibra il campo</button>
       <button id="btnSkip" hidden>Salta questo punto</button>
       <label class="inline" for="thr">Sensibilità
-        <input type="range" id="thr" min="20" max="120" step="5" value="45">
+        <input type="range" id="thr" min="20" max="120" step="5" value="95">
       </label>
       <label class="inline" for="ovl"><input type="checkbox" id="ovl" checked> Mostra tracciamento</label>
+      <label class="inline" for="levelFix"><input type="checkbox" id="levelFix" checked> Correggi l'inclinazione col sensore</label>
     </div>
     <div class="grid2">
       <label for="lens">Obiettivo
@@ -232,6 +237,8 @@ details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap
         <li>Con l'obiettivo 1x serve stare a circa 4 m dalla riga laterale del doppio; con lo 0.5x basta anche meno di 1 m. Il 2.5x va bene solo da molto lontano (oltre 15 m dalla riga).</li>
         <li>Imposta obiettivo e altezze, calibra, scegli metà e direzione, poi servi. La velocità compare appena la pallina passa la rete.</li>
         <li>Se le due stime della distanza non coincidono, il telefono è probabilmente inclinato o l'obiettivo impostato è sbagliato.</li>
+        <li>In basso a sinistra sul video c'è la livella: punta a 0°, pallino verde sotto 1°. La linea azzurra tratteggiata è l'orizzonte vero misurato dal sensore: con il telefono dritto è orizzontale e parallela al bordo superiore della rete.</li>
+        <li>Calibra quando il telefono è già fermo nella posizione definitiva: l'inclinazione di quel momento viene usata per correggere i calcoli. Se il telefono si sposta, compare "Telefono mosso: ricalibra".</li>
       </ol>
     </details>
     <details>
@@ -241,6 +248,7 @@ details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap
         <li>Corregge la frenata dell'aria (circa il 20% persa entro la rete) e riporta la velocità in uscita dalla racchetta, come un radar.</li>
         <li>Tiene conto della diagonale del servizio (metà, direzione e punto da cui servi) e dell'altezza d'impatto, stimata in 1,5 volte la tua altezza.</li>
         <li>In simulazione l'errore è intorno al 1–3% con le impostazioni giuste; sbagliare la direzione può costare fino al 13%. Va ancora verificato in campo.</li>
+        <li>Il numero dopo ± è l'errore stimato per quel servizio: somma l'incertezza della misura (quanti punti, quanto allineati) con quella di direzione, posizione, distanza, altezza d'impatto e resistenza dell'aria. È volutamente prudente: in simulazione il valore vero è caduto dentro questo margine nell'86% dei casi.</li>
         <li>I calcoli avvengono solo sul telefono: il video non viene inviato da nessuna parte.</li>
       </ul>
     </details>
@@ -369,7 +377,8 @@ const Core = (() => {
     const den = n * stt - st * st; if (Math.abs(den) < 1e-12) return null;
     const slope = (n * stx - st * sx) / den, icpt = (sx - slope * st) / n;
     let ss = 0; for (let i = 0; i < n; i++) { const r = X[i] - (slope * T[i] + icpt); ss += r * r; }
-    return { slope, icpt, rms: Math.sqrt(ss / n) };
+    const Stt = stt - st * st / n, se = n > 2 && Stt > 0 ? Math.sqrt(ss / (n - 2) / Stt) : Infinity; // standard error of the slope
+    return { slope, icpt, rms: Math.sqrt(ss / n), se };
   }
 
   // With v(x) = v0·e^(−kx): X = (e^(kx) − 1)/k grows linearly in time with slope v0 (speed at the baseline).
@@ -411,7 +420,7 @@ const Core = (() => {
     const kmh = v0 * 3.6 * pf;
     const atNet = kmh * Math.exp(-kx * NET);
     const quality = pts.length >= 8 && fit.rms < 0.2 ? "good" : pts.length >= 5 ? "warn" : "bad";
-    return { kmh, atNet, n: pts.length, span, rms: fit.rms, quality, pts: pts.slice(), t: pts[pts.length - 1].t };
+    return { kmh, atNet, n: pts.length, span, rms: fit.rms, seKmh: fit.se * 3.6 * pf, quality, pts: pts.slice(), t: pts[pts.length - 1].t };
   }
 
   class ServeTracker {
@@ -429,7 +438,7 @@ const Core = (() => {
       for (const b of blobs) {
         const x = this.map(b.u);
         if (!isFinite(x) || x < -1.5 || x > NET + 0.6) continue;
-        cands.push({ t, x, u: b.u, v: b.v, area: b.area });
+        cands.push({ t, x, u: b.u, v: b.v, area: b.area, ru: b.ru, rv: b.rv });
       }
       this.lastCands = cands;
       const used = new Set(), grown = [];
@@ -535,7 +544,82 @@ const Core = (() => {
     return { W, H, fps, frames, mapPts, frame, kmh };
   }
 
-  return { NET, SERVICE, K_DRAG, PATH_FACTOR, LENSES, fitMapping, depthCorrectedMap, geometry, detectBlobs, evaluate, ServeTracker, makeDemo };
+  // ---- phone tilt (from the motion sensor) ----
+  const D2R = Math.PI / 180;
+  // Direction of gravity in the camera frame (X right, Y down as on screen, Z out of the back of the phone),
+  // from the W3C deviceorientation angles beta/gamma (degrees) and the screen rotation (0, 90, 180, 270).
+  function gravityInCamera(beta, gamma, screenAngle) {
+    const b = beta * D2R, g = gamma * D2R;
+    const dev = [Math.cos(b) * Math.sin(g), -Math.sin(b), -Math.cos(b) * Math.cos(g)]; // device frame: x right, y top, z out of the screen
+    const a = (((screenAngle || 0) % 360) + 360) % 360;
+    const sr = a === 90 ? [0, -1, 0] : a === 270 ? [0, 1, 0] : a === 180 ? [-1, 0, 0] : [1, 0, 0];  // screen-right in device frame
+    const su = a === 90 ? [1, 0, 0] : a === 270 ? [-1, 0, 0] : a === 180 ? [0, -1, 0] : [0, 1, 0]; // screen-up in device frame
+    const dot = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+    return [dot(dev, sr), -dot(dev, su), -dev[2]];
+  }
+  // pitch > 0: the phone looks down; roll: how much the picture is turned (sign follows gravity toward image right)
+  function tiltAngles(G) {
+    const n = Math.hypot(G[0], G[1], G[2]);
+    return { pitch: Math.asin(G[2] / n) / D2R, roll: Math.atan2(G[0], G[1]) / D2R };
+  }
+  // Smallest rotation that turns gravity G into straight down (0, 1, 0): the phone made level, same heading.
+  function levelRotation(G) {
+    const n = Math.hypot(G[0], G[1], G[2]), g = G.map(c => c / n);
+    const s = Math.hypot(g[2], g[0]), c = g[1];
+    if (s < 1e-9) return [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const k = [-g[2] / s, 0, g[0] / s], a = Math.atan2(s, c), ca = Math.cos(a), sa = Math.sin(a), v = 1 - ca;
+    return [
+      [ca + k[0] * k[0] * v, k[0] * k[1] * v - k[2] * sa, k[0] * k[2] * v + k[1] * sa],
+      [k[1] * k[0] * v + k[2] * sa, ca + k[1] * k[1] * v, k[1] * k[2] * v - k[0] * sa],
+      [k[2] * k[0] * v - k[1] * sa, k[2] * k[1] * v + k[0] * sa, ca + k[2] * k[2] * v]
+    ];
+  }
+  const mul = (R, r) => [0, 1, 2].map(i => R[i][0] * r[0] + R[i][1] * r[1] + R[i][2] * r[2]);
+  // Where a point seen by the tilted phone would appear to a perfectly level phone. f: lens (image-width units).
+  function levelCorrector(G, f, aspect) {
+    const R = levelRotation(G);
+    return (u, v) => {
+      const q = mul(R, [(u - 0.5) / f, (v - 0.5) * aspect / f, 1]);
+      return { u: 0.5 + f * q[0] / q[2], v: 0.5 + f * q[1] / q[2] / aspect };
+    };
+  }
+  // Two image points on the true horizon (camera height), to draw a guide line on the video.
+  function horizonLine(G, f, aspect) {
+    const R = levelRotation(G), Rt = [0, 1, 2].map(i => [R[0][i], R[1][i], R[2][i]]);
+    return [-2, 2].map(x => { const q = mul(Rt, [x, 0, 1]); return { u: 0.5 + f * q[0] / q[2], v: 0.5 + f * q[1] / q[2] / aspect }; });
+  }
+
+  // ---- how sure is the number ----
+  function speedOf(pts, map, pf, k) {
+    const kx = k * pf, t0 = pts[0].t;
+    const fit = linreg(pts.map(p => p.t - t0), pts.map(p => (Math.exp(kx * map(p.u)) - 1) / kx));
+    const kmh = fit.slope * 3.6 * pf;
+    return { kmh, atNet: kmh * Math.exp(-kx * NET) };
+  }
+  // Half-widths of what each setting can really be: the zone you aim at, where you stand, distance, contact height, air drag.
+  const ZONE = { 0.5: 0.4, 2.06: 0.6, 3.6: 0.5 };
+  function uncertainty(res, calib, st, demoMap) {
+    const parts = [], pf0 = st ? geometry(calib, st).pathFactor : PATH_FACTOR;
+    const map0 = st ? geometry(calib, st).map : demoMap, base = speedOf(res.pts, map0, pf0, K_DRAG);
+    const swing = (a, b) => ({ kmh: (Math.abs(a.kmh - base.kmh) + Math.abs(b.kmh - base.kmh)) / 2,
+                               atNet: (Math.abs(a.atNet - base.atNet) + Math.abs(b.atNet - base.atNet)) / 2 });
+    const vary = patch => { const g = geometry(calib, Object.assign({}, st, patch)); return speedOf(res.pts, g.map, g.pathFactor, K_DRAG); };
+    parts.push(["misura", { kmh: res.seKmh, atNet: res.seKmh * Math.exp(-K_DRAG * pf0 * NET) }]);
+    parts.push(["aria", swing(speedOf(res.pts, map0, pf0, K_DRAG * 0.9), speedOf(res.pts, map0, pf0, K_DRAG * 1.1))]);
+    parts.push(["modello", { kmh: 0.01 * base.kmh, atNet: 0.01 * base.atNet }]);
+    if (st) {
+      const t = st.targetY || 2.06, dz = ZONE[t] || 0.6, g0 = geometry(calib, st);
+      parts.push(["direzione", swing(vary({ targetY: t - dz }), vary({ targetY: t + dz }))]);
+      parts.push(["posizione", swing(vary({ offset: Math.max(0, (st.offset || 0) - 0.25) }), vary({ offset: (st.offset || 0) + 0.25 }))]);
+      const dd = st.dist > 0 ? 0.3 : 0.08 * g0.dist;
+      parts.push(["distanza", swing(vary({ dist: g0.dist - dd }), vary({ dist: g0.dist + dd }))]);
+      parts.push(["impatto", swing(vary({ serverH: (st.serverH || 1.75) - 0.1 }), vary({ serverH: (st.serverH || 1.75) + 0.1 }))]);
+    }
+    const tot = key => Math.sqrt(parts.reduce((a, [, p]) => a + (isFinite(p[key]) ? p[key] * p[key] : 0), 0));
+    return { kmh: tot("kmh"), atNet: tot("atNet"), parts };
+  }
+
+  return { NET, SERVICE, K_DRAG, PATH_FACTOR, LENSES, gravityInCamera, tiltAngles, levelCorrector, horizonLine, speedOf, uncertainty, fitMapping, depthCorrectedMap, geometry, detectBlobs, evaluate, ServeTracker, makeDemo };
 })();
 /*CORE-END*/
 
@@ -551,9 +635,43 @@ const Core = (() => {
     mode: null, calib: store.get("calib"), calStep: -1, calPts: [], map: null, tracker: null,
     ring: [], W: 480, H: 270, thr: 45, overlayOn: true, hist: store.get("hist") || [], lastT: -1,
     fpsN: 0, fpsT: 0, fps: 0, lastRes: null, slow: 1, demoTimer: null, rvfc: null, raf: null, bufs: {}, wake: null, noisy: false,
-    geo: null,
-    set: Object.assign({ lens: "wide", phoneH: 1.3, serverH: 1.8, sideDist: -1, offset: 0.25, side: 1, targetY: 2.06 }, store.get("setup") || {})
+    geo: null, geoIn: null, corr: null, tilt: null, calTilt: store.get("calTilt"), moved: false,
+    set: Object.assign({ lens: "wide", phoneH: 1.3, serverH: 1.8, sideDist: -1, offset: 0.25, side: 1, targetY: 2.06, levelFix: true }, store.get("setup") || {})
   };
+
+  // ---- motion sensor: live tilt of the phone
+  function screenAngle() {
+    if (screen.orientation && typeof screen.orientation.angle === "number") return screen.orientation.angle;
+    return typeof window.orientation === "number" ? window.orientation : 0;
+  }
+  function onOrientation(e) {
+    if (e.beta == null || e.gamma == null) return;
+    const G = Core.gravityInCamera(e.beta, e.gamma, screenAngle());
+    S.tilt = S.tilt ? { G: S.tilt.G.map((v, i) => 0.85 * v + 0.15 * G[i]) } : { G };
+    if (S.calTilt) {
+      const a = S.tilt.G, b = S.calTilt, n = Math.hypot(...a) * Math.hypot(...b);
+      S.moved = Math.acos(Math.min(1, (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / n)) / Math.PI * 180 > 1.5;
+    }
+  }
+  let tiltOn = false;
+  function startTilt() {   // must run inside a tap: iPhone asks permission for the motion sensor
+    if (tiltOn) return;
+    const listen = () => { tiltOn = true; window.addEventListener("deviceorientation", onOrientation); };
+    try {
+      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+        DeviceOrientationEvent.requestPermission().then(r => { if (r === "granted") listen(); }).catch(() => {});
+      } else if (typeof DeviceOrientationEvent !== "undefined") listen();
+    } catch (e) { /* no motion sensor here */ }
+  }
+  function renderLevel() {
+    const el = $("level");
+    if (S.mode !== "live" || !S.tilt) { el.hidden = true; return; }
+    const a = Core.tiltAngles(S.tilt.G), worst = Math.max(Math.abs(a.pitch), Math.abs(a.roll));
+    const col = worst < 1 ? "#45c27a" : worst < 3 ? "#f0a33a" : "#ef6b5e";
+    const f1 = v => Math.abs(v).toFixed(1).replace(".", ",");
+    el.hidden = false;
+    el.innerHTML = `<i style="background:${col}"></i>${a.pitch >= 0 ? "Giù" : "Su"} ${f1(a.pitch)}° · Storto ${f1(a.roll)}°` + (S.moved ? " · Telefono mosso: ricalibra" : "");
+  }
   const CAL_X = [0, Core.SERVICE, Core.NET], HALF_DOUBLES = 10.97 / 2;
   const CAL_NAME = ["il segno centrale della linea di fondo", "la T del servizio", "la rete, al centro"];
 
@@ -562,14 +680,23 @@ const Core = (() => {
   function hint(text) { const h = $("hint"); h.hidden = !text; h.textContent = text || ""; }
 
   function aspect() { return video.videoWidth ? video.videoHeight / video.videoWidth : 9 / 16; }
+  // Tilt captured when the court was calibrated, used to "straighten" taps and ball positions (live camera only).
+  function corrector() {
+    if (S.mode !== "live" || !S.set.levelFix || !S.calTilt) return null;
+    const a = Core.tiltAngles(S.calTilt);
+    if (Math.abs(a.pitch) > 12 || Math.abs(a.roll) > 12) return null;
+    return Core.levelCorrector(S.calTilt, Core.LENSES[S.set.lens].f, aspect());
+  }
   function buildMap() {
-    S.geo = null; S.map = null;
+    S.geo = null; S.map = null; S.geoIn = null; S.corr = corrector();
     if (S.calib && S.calib.length >= 2) {
       if (S.mode === "demo") S.map = Core.fitMapping(S.calib);
       else {
         // the engine works from the court's centre line: half the doubles width (5.485 m) + the gap to the phone
         const dist = S.set.sideDist >= 0 ? S.set.sideDist + HALF_DOUBLES : 0;
-        S.geo = Core.geometry(S.calib, Object.assign({ aspect: aspect() }, S.set, { dist })); S.map = S.geo.map;
+        const calib = S.corr ? S.calib.map(p => Object.assign({}, p, S.corr(p.u, p.v))) : S.calib;
+        const st = Object.assign({ aspect: aspect() }, S.set, { dist });
+        S.geo = Core.geometry(calib, st); S.map = S.geo.map; S.geoIn = { calib, st };
       }
     }
     S.tracker = S.map ? new Core.ServeTracker(S.map, S.geo ? { pathFactor: S.geo.pathFactor } : null) : null;
@@ -727,9 +854,12 @@ const Core = (() => {
     else setStatus((S.noisy ? "Immagine instabile · " : "In ascolto · ") + (S.fps ? Math.round(S.fps) + " fps" : ""), S.noisy ? "err" : "on");
     S.lastBlobs = blobs;
     if (S.tracker && S.calStep < 0) {
-      const res = S.tracker.push(t, blobs);
+      const fixed = S.corr ? blobs.map(b => Object.assign({ ru: b.u, rv: b.v, area: b.area }, S.corr(b.u, b.v))) : blobs;
+      const res = S.tracker.push(t, fixed);
       if (res) showResult(res);
     }
+    if (S.mode === "live" && S.moved && S.tracker) setStatus("Telefono mosso: ricalibra", "err");
+    renderLevel();
     drawOverlay();
   }
   function flush() { if (S.tracker && S.lastT >= 0) { const res = S.tracker.push(S.lastT + 1, []); if (res) showResult(res); } drawOverlay(); }
@@ -738,12 +868,15 @@ const Core = (() => {
   function fmt(v) { return Math.round(v).toString(); }
   function showResult(r) {
     S.lastRes = r;
-    const sp = $("speed"); sp.innerHTML = fmt(r.kmh) + "<small>km/h</small>";
+    let u = null;
+    try { u = S.geoIn ? Core.uncertainty(r, S.geoIn.calib, S.geoIn.st) : Core.uncertainty(r, null, null, S.map); } catch (e) { u = null; }
+    const pm = v => (u ? "± " + Math.max(1, Math.round(v)) : "");
+    const sp = $("speed"); sp.innerHTML = fmt(r.kmh) + "<small>km/h</small>" + (u ? `<span class="pm">${pm(u.kmh)}</span>` : "");
     sp.classList.remove("flash"); void sp.offsetWidth; sp.classList.add("flash");
     const ql = { good: ["good", "Buona"], warn: ["warn", "Discreta"], bad: ["bad", "Bassa"] }[r.quality];
-    $("detail").innerHTML = `<span class="q ${ql[0]}">${ql[1]}</span>A rete circa ${fmt(r.atNet)} km/h · ${r.n} posizioni su ${r.span.toFixed(1)} m`;
+    $("detail").innerHTML = `<span class="q ${ql[0]}">${ql[1]}</span>A rete ${fmt(r.atNet)} ${pm(u ? u.atNet : 0)} km/h · ${r.n} posizioni su ${r.span.toFixed(1)} m`;
     if (S.mode !== "demo") {
-      S.hist.unshift({ kmh: r.kmh, atNet: r.atNet, n: r.n, q: r.quality, at: Date.now() });
+      S.hist.unshift({ kmh: r.kmh, atNet: r.atNet, ek: u ? u.kmh : null, en: u ? u.atNet : null, n: r.n, q: r.quality, at: Date.now() });
       S.hist = S.hist.slice(0, 200); store.set("hist", S.hist);
     }
     renderHist();
@@ -755,7 +888,8 @@ const Core = (() => {
     $("avg").textContent = h.length ? fmt(h.reduce((a, x) => a + x.kmh, 0) / h.length) : "—";
     if (!h.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">Nessun servizio misurato. I risultati della demo non vengono salvati.</td></tr>'; return; }
     const ql = { good: "Buona", warn: "Discreta", bad: "Bassa" };
-    tb.innerHTML = h.map((x, i) => `<tr><td>${h.length - i}</td><td class="num">${fmt(x.kmh)}</td><td>${fmt(x.atNet)}</td><td>${x.n}</td><td>${ql[x.q] || "—"}</td><td>${new Date(x.at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</td></tr>`).join("");
+    const e = v => (v != null ? ` <span class="muted">±${Math.max(1, Math.round(v))}</span>` : "");
+    tb.innerHTML = h.map((x, i) => `<tr><td>${h.length - i}</td><td class="num">${fmt(x.kmh)}${e(x.ek)}</td><td>${fmt(x.atNet)}${e(x.en)}</td><td>${x.n}</td><td>${ql[x.q] || "—"}</td><td>${new Date(x.at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</td></tr>`).join("");
   }
 
   // ---- overlay
@@ -783,11 +917,18 @@ const Core = (() => {
     const tr = S.tracker && S.tracker.activeTrack();
     if (tr) drawTrack(tr.pts, "#ffd23f", X, Y);
     if (S.lastRes && S.lastT - S.lastRes.t < 2.5 && S.lastT >= S.lastRes.t) drawTrack(S.lastRes.pts, "#45c27a", X, Y);
+    // true horizon from the motion sensor: it should run parallel to the top of the net when the phone is level
+    if (S.mode === "live" && S.tilt) {
+      const h = Core.horizonLine(S.tilt.G, Core.LENSES[S.set.lens].f, aspect());
+      octx.strokeStyle = "rgba(91,200,240,.85)"; octx.lineWidth = 1.5; octx.setLineDash([10, 6]);
+      octx.beginPath(); octx.moveTo(X(h[0].u), Y(h[0].v)); octx.lineTo(X(h[1].u), Y(h[1].v)); octx.stroke(); octx.setLineDash([]);
+    }
   }
   function drawTrack(pts, color, X, Y) {
+    const U = p => X(p.ru != null ? p.ru : p.u), V = p => Y(p.rv != null ? p.rv : p.v);
     octx.strokeStyle = color; octx.fillStyle = color; octx.lineWidth = 2.5;
-    octx.beginPath(); pts.forEach((p, i) => (i ? octx.lineTo(X(p.u), Y(p.v)) : octx.moveTo(X(p.u), Y(p.v)))); octx.stroke();
-    pts.forEach(p => { octx.beginPath(); octx.arc(X(p.u), Y(p.v), 3.5, 0, Math.PI * 2); octx.fill(); });
+    octx.beginPath(); pts.forEach((p, i) => (i ? octx.lineTo(U(p), V(p)) : octx.moveTo(U(p), V(p)))); octx.stroke();
+    pts.forEach(p => { octx.beginPath(); octx.arc(U(p), V(p), 3.5, 0, Math.PI * 2); octx.fill(); });
   }
   // where the picture actually sits inside the 16:9 stage (object-fit: contain)
   function contentBox() {
@@ -806,7 +947,9 @@ const Core = (() => {
   }
   function endCal(save) {
     if (save) {
-      S.calib = S.calPts.slice(); store.set("calib", S.calib); buildMap();
+      S.calib = S.calPts.slice(); store.set("calib", S.calib);
+      S.calTilt = S.mode === "live" && S.tilt ? S.tilt.G.slice() : null; store.set("calTilt", S.calTilt); S.moved = false;
+      buildMap();
       msg("Campo calibrato. Servi: la velocità compare quando la pallina passa la metà campo.");
     }
     S.calStep = -1; S.calPts = []; hint(""); $("btnSkip").hidden = true; $("btnCal").textContent = "Calibra il campo"; renderSteps(); drawOverlay();
@@ -828,7 +971,9 @@ const Core = (() => {
   });
 
   // ---- controls
-  $("btnCam").onclick = () => startCamera();
+  $("btnCam").onclick = () => { startTilt(); startCamera(); };
+  $("levelFix").checked = S.set.levelFix !== false;
+  $("levelFix").onchange = e => { S.set.levelFix = e.target.checked; store.set("setup", S.set); buildMap(); };
   $("camSel").onchange = e => startCamera(e.target.value);
   $("file").onchange = e => { const f = e.target.files[0]; if (f) startFile(f); e.target.value = ""; };
   $("btnDemo").onclick = startDemo;
@@ -841,7 +986,8 @@ const Core = (() => {
   $("slowSel").onchange = e => { S.slow = Number(e.target.value) || 1; S.ring = []; buildMap(); };
   $("btnCal").onclick = () => (S.calStep >= 0 ? endCal(false) : startCal());
   $("btnSkip").onclick = () => nextCal();
-  $("thr").oninput = e => { S.thr = Number(e.target.value); };
+  // slider to the right = more sensitive = lower colour-difference threshold
+  $("thr").oninput = e => { S.thr = 140 - Number(e.target.value); };
   // ---- setup: dropdowns and the quick per-serve buttons
   const it = v => v.toFixed(2).replace(/0$/, "").replace(".", ",");
   const OPTS = {
