@@ -213,10 +213,10 @@ details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap
       <label for="phoneH">Altezza del telefono da terra<select id="phoneH"></select></label>
       <label for="serverH">Altezza di chi serve<select id="serverH"></select></label>
       <label for="offset">Distanza dal segno centrale quando servi<select id="offset"></select></label>
-      <label for="sideDist">Distanza telefono – riga laterale del doppio<select id="sideDist"></select></label>
+      <label for="singlesDist">Distanza telefono – riga laterale del singolo<select id="singlesDist"></select></label>
     </div>
     <p class="msg" id="geoInfo"></p>
-    <p class="msg">Con il telefono fermo, tocca sul video tre punti lungo il centro del campo: il segno centrale della linea di fondo, la T del servizio e la rete al centro. Il programma usa queste misure ufficiali (0 m, 5,49 m, 11,89 m) per convertire i pixel in metri, e con l'obiettivo scelto stima da solo quanto è lontano il telefono.</p>
+    <p class="msg">Con il telefono fermo, tocca sul video i punti lungo il centro del campo: il segno centrale della linea di fondo e la T del servizio, più la rete al centro solo se è nell'inquadratura (altrimenti salta). Il programma usa queste misure ufficiali (0 m, 5,49 m, 11,89 m) per convertire i pixel in metri, e con l'obiettivo scelto stima da solo quanto è lontano il telefono.</p>
   </section>
 
   <section class="panel">
@@ -279,8 +279,9 @@ details ol, details ul { margin: 8px 0 0; padding-left: 20px; display: grid; gap
       <summary>Come posizionare il telefono</summary>
       <ol>
         <li>Su un treppiede, in orizzontale, a 1,2–1,5 m da terra. Dritto (non inclinato in avanti né di lato) e rivolto dritto verso il campo.</li>
-        <li>Di lato al campo, più o meno all'altezza della metà campo del battitore. Linea di fondo e rete devono stare entrambe nel video.</li>
-        <li>Con l'obiettivo 1x serve stare a circa 4 m dalla riga laterale del doppio; con lo 0.5x basta anche meno di 1 m. Il 2.5x va bene solo da molto lontano (oltre 15 m dalla riga).</li>
+        <li>Di lato al campo, a metà tra la linea di fondo e la linea del servizio del battitore, con l'obiettivo 1x. Nel video devono vedersi il segno centrale della linea di fondo e la T del servizio; la rete non serve.</li>
+        <li>Per inquadrare dalla linea di fondo a qualche metro oltre la T, con l'1x servono circa 2,5–3 m dalla riga laterale del singolo. La riga laterale lontana non serve vederla: la distanza la ricava dall'obiettivo e dai punti toccati.</li>
+        <li>Lo 0.5x è sconsigliato: con poca luce perde qualità e la pallina veloce si confonde.</li>
         <li>Imposta obiettivo e altezze, calibra, scegli metà e direzione, poi servi. La velocità compare appena la pallina passa la rete.</li>
         <li>Se le due stime della distanza non coincidono, il telefono è probabilmente inclinato o l'obiettivo impostato è sbagliato.</li>
         <li>In basso a sinistra sul video c'è la livella: punta a 0°, pallino verde sotto 1°. La linea azzurra tratteggiata è l'orizzonte vero misurato dal sensore: con il telefono dritto è orizzontale e parallela al bordo superiore della rete.</li>
@@ -347,11 +348,15 @@ const Core = (() => {
   // offset: how far from the centre mark the server stands. The ball crosses the centre line on its way to the other box.
   const CONTACT_X = 0.3, BOUNCE_X = 15.1;  // contact just inside the baseline; bounce ~3.2 m past the net
   function depthCorrectedMap(base, xc, dist, side, targetY, offset) {
-    if (!side || !(dist > 2)) return base;
+    if (!side || !(dist >= 3)) return base;           // a distance under 3 m means the calibration is off: no correction
     const s = side, o = offset || 0, g = ((targetY || 2.06) + o) / (BOUNCE_X - CONTACT_X);
     return u => {
-      const A = (base(u) - xc) / dist;
-      return (xc + A * (dist - s * o - CONTACT_X * s * g)) / (1 - A * s * g);
+      const xb = base(u), A = (xb - xc) / dist, den = 1 - A * s * g;
+      if (!(den > 0.5)) return xb;
+      const xc2 = (xc + A * (dist - s * o - CONTACT_X * s * g)) / den;
+      // the diagonal can move a point by a few percent, never more: cap it so a bad setting cannot blow the speed up
+      const lim = 0.15 * Math.abs(xb - xc) + 0.3;
+      return Math.max(xb - lim, Math.min(xb + lim, xc2));
     };
   }
 
@@ -372,13 +377,15 @@ const Core = (() => {
       distFromHeight = ground.reduce((a, p) => a + lens.f * st.phoneH / ((p.v - 0.5) * st.aspect), 0) / ground.length;
     }
     const dist = st.dist > 0 ? st.dist : distAuto;
+    // the phone stands outside the court (more than ~4.5 m from the centre line) and within 40 m: otherwise wrong taps or wrong lens
+    const suspect = !(distAuto >= 4.5 && distAuto <= 40);
     const offset = st.offset || 0, targetY = st.targetY || 2.06;
     const contactH = st.serverH > 0 ? 1.5 * st.serverH : 2.6; // contact ≈ 1.5 × standing height (arm + racket)
     const dx = BOUNCE_X - CONTACT_X, dy = targetY + offset;
     const pathFactor = Math.sqrt(dx * dx + dy * dy + contactH * contactH) / dx;
     const map = depthCorrectedMap(base, xc, dist, st.side, targetY, offset);
     const mismatch = distFromHeight ? Math.abs(distFromHeight / distAuto - 1) : null;
-    return { map, xc, dist, distAuto, distFromHeight, mismatch, contactH, pathFactor };
+    return { map, xc, dist, distAuto, distFromHeight, mismatch, contactH, pathFactor, suspect };
   }
 
   function detectBlobs(cur, p1, p2, W, H, o) {
@@ -465,6 +472,7 @@ const Core = (() => {
     // fit, then drop the worst point while it sits more than 0.3 m off the line (a stray blob picked up on the way)
     for (;;) {
       pts = longestRun(pts);
+      // 5 positions minimum even at 30 fps: with 4, stray blobs line up into made-up speeds. Better a missed serve than a false number.
       if (pts.length < o.minPts) return no("pochi");
       const t0 = pts[0].t, T = pts.map(p => p.t - t0), X = pts.map(p => (Math.exp(kx * p.x) - 1) / kx);
       fit = linreg(T, X); if (!fit) return no("pochi");
@@ -488,6 +496,7 @@ const Core = (() => {
     const v0 = fit.slope;
     if (!(v0 >= o.vMin && v0 <= o.vMax * 1.3)) return no("velocita");
     const kmh = v0 * 3.6 * pf;
+    if (kmh > (o.maxKmh || 250)) return no("implausibile");   // faster than any serve ever measured: something is off
     const atNet = kmh * Math.exp(-kx * NET);
     const quality = pts.length >= 8 && fit.rms < 0.2 ? "good" : pts.length >= 5 ? "warn" : "bad";
     return { kmh, atNet, n: pts.length, span, rms: fit.rms, seKmh: fit.se * 3.6 * pf, quality, pts: pts.slice(), t: pts[pts.length - 1].t };
@@ -496,7 +505,7 @@ const Core = (() => {
   class ServeTracker {
     constructor(map, opt) {
       this.map = map;
-      this.o = Object.assign({ vMin: 14, vMax: 75, minPts: 5, minSpan: 5, maxStartX: 4.5, maxGap: 0.13, cooldown: 0.8, hold: 0.3 }, opt || {});
+      this.o = Object.assign({ vMin: 14, vMax: 75, minPts: 5, minSpan: 4, maxStartX: 4.5, maxGap: 0.13, cooldown: 0.8, hold: 0.3 }, opt || {});
       this.tracks = []; this.lastHit = -1e9; this.lastCands = []; this.pending = null;
     }
     push(t, blobs) {
@@ -555,7 +564,7 @@ const Core = (() => {
         const r = evaluate(tr.pts, o);
         if (r) { if (!result || r.n > result.n || (r.n === result.n && r.rms < result.rms)) result = r; continue; }
         // a fast, straight, serve-like track that still failed the checks: probably a serve we could not measure
-        if (tr.pts.length >= 6 && ["pochi", "corto", "tardi", "buchi"].includes(o._why)) {
+        if (tr.pts.length >= 6 && ["pochi", "corto", "tardi", "buchi", "implausibile"].includes(o._why)) {
           const a = tr.pts[0], vx = (L.x - a.x) / Math.max(1e-3, L.t - a.t);
           const fit = linreg(tr.pts.map(p => p.t - a.t), tr.pts.map(p => p.x));
           if (L.x - a.x >= 3 && vx >= o.vMin && vx <= o.vMax * 1.3 && fit && fit.rms < 0.25 && vWobble(tr.pts) < 0.7 * MAX_WOBBLE && (!miss || tr.pts.length > miss.n)) {
@@ -722,7 +731,7 @@ const Core = (() => {
     ring: [], W: 480, H: 270, thr: 45, overlayOn: true, hist: store.get("hist") || [], lastT: -1,
     fpsN: 0, fpsT: 0, fps: 0, lastRes: null, slow: 1, demoTimer: null, rvfc: null, raf: null, bufs: {}, wake: null, noisy: false,
     geo: null, geoIn: null, corr: null, tilt: null, calTilt: store.get("calTilt"), moved: false,
-    set: Object.assign({ lens: "wide", phoneH: 1.3, serverH: 1.8, sideDist: -1, offset: 0.25, side: 1, targetY: 2.06, levelFix: true,
+    set: Object.assign({ lens: "wide", phoneH: 1.3, serverH: 1.8, singlesDist: -1, offset: 0.25, side: 1, targetY: 2.06, levelFix: true,
       colorFilter: false, voice: false, clips: true }, store.get("setup") || {})
   };
 
@@ -749,7 +758,8 @@ const Core = (() => {
     pochi: "la pallina si è vista in pochi fotogrammi. Prova ad aumentare la sensibilità",
     corto: "la traiettoria vista è troppo corta. Controlla che si vedano linea di fondo e rete",
     tardi: "la pallina si è vista solo da metà campo. Controlla che si veda la linea di fondo",
-    buchi: "la pallina è stata persa per troppi fotogrammi. Prova ad aumentare la sensibilità"
+    buchi: "la pallina è stata persa per troppi fotogrammi. Prova ad aumentare la sensibilità",
+    implausibile: "la velocità calcolata non è credibile. Controlla la calibrazione: punti toccati e obiettivo"
   };
 
   // ---- motion sensor: live tilt of the phone
@@ -785,7 +795,7 @@ const Core = (() => {
     el.hidden = false;
     el.innerHTML = `<i style="background:${col}"></i>${a.pitch >= 0 ? "Giù" : "Su"} ${f1(a.pitch)}° · Storto ${f1(a.roll)}°` + (S.moved ? " · Telefono mosso: ricalibra" : "");
   }
-  const CAL_X = [0, Core.SERVICE, Core.NET], HALF_DOUBLES = 10.97 / 2;
+  const CAL_X = [0, Core.SERVICE, Core.NET], HALF_SINGLES = 8.23 / 2;
   const CAL_NAME = ["il segno centrale della linea di fondo", "la T del servizio", "la rete, al centro"];
 
   function setStatus(text, cls) { const s = $("status"); s.textContent = text; s.className = "pill" + (cls ? " " + cls : ""); }
@@ -805,8 +815,8 @@ const Core = (() => {
     if (S.calib && S.calib.length >= 2) {
       if (S.mode === "demo") S.map = Core.fitMapping(S.calib);
       else {
-        // the engine works from the court's centre line: half the doubles width (5.485 m) + the gap to the phone
-        const dist = S.set.sideDist >= 0 ? S.set.sideDist + HALF_DOUBLES : 0;
+        // the engine works from the court's centre line: half the singles width (4.115 m) + the gap to the phone
+        const dist = S.set.singlesDist >= 0 ? S.set.singlesDist + HALF_SINGLES : 0;
         const calib = S.corr ? S.calib.map(p => Object.assign({}, p, S.corr(p.u, p.v))) : S.calib;
         const st = Object.assign({ aspect: aspect() }, S.set, { dist });
         S.geo = Core.geometry(calib, st); S.map = S.geo.map; S.geoIn = { calib, st };
@@ -818,10 +828,11 @@ const Core = (() => {
   function renderGeo() {
     const el = $("geoInfo"), g = S.geo, f1 = v => v.toFixed(1).replace(".", ",");
     if (!g) { el.className = "msg"; el.textContent = "Dopo la calibrazione qui compaiono la distanza stimata del telefono e l'altezza d'impatto."; return; }
-    let t = `Telefono a ${f1(g.dist - HALF_DOUBLES)} m dalla riga del doppio (${S.set.sideDist >= 0 ? "impostata" : "stimata dall'obiettivo"})`;
-    if (g.distFromHeight) t += `, dall'altezza del telefono risultano ${f1(g.distFromHeight - HALF_DOUBLES)} m`;
+    let t = `Telefono a ${f1(g.dist - HALF_SINGLES)} m dalla riga del singolo (${S.set.singlesDist >= 0 ? "impostata" : "stimata dall'obiettivo"})`;
+    if (g.distFromHeight) t += `, dall'altezza del telefono risultano ${f1(g.distFromHeight - HALF_SINGLES)} m`;
+    if (g.suspect) t += ". Distanza non credibile: ricontrolla i punti toccati e l'obiettivo";
     t += `. Impatto a circa ${f1(g.contactH)} m, percorso reale più lungo del ${f1((g.pathFactor - 1) * 100)}%.`;
-    const bad = g.mismatch != null && g.mismatch > 0.2;
+    const bad = g.suspect || (g.mismatch != null && g.mismatch > 0.2);
     if (bad) t += " Le due distanze non coincidono: controlla che il telefono sia dritto e che obiettivo e altezza siano giusti, oppure imposta la distanza a mano.";
     el.className = "msg" + (bad ? " err" : ""); el.textContent = t;
   }
@@ -1277,19 +1288,24 @@ const Core = (() => {
     hint("Tocca " + CAL_NAME[0]); renderSteps(); drawOverlay();
   }
   function endCal(save) {
+    if (save && S.calPts.length < 2) {
+      msg("Servono almeno due punti: il segno centrale della linea di fondo e la T del servizio (o la rete). Calibra di nuovo.", true);
+      save = false;
+    }
     if (save) {
       S.calib = S.calPts.slice(); store.set("calib", S.calib);
       S.calTilt = S.mode === "live" && S.tilt ? S.tilt.G.slice() : null; store.set("calTilt", S.calTilt); S.moved = false;
       buildMap();
-      msg("Campo calibrato. Servi: la velocità compare quando la pallina passa la metà campo.");
+      if (S.geo && S.geo.suspect) msg("Calibrazione sospetta: la distanza del telefono che ne risulta non è credibile. Controlla di aver toccato i punti giusti e l'obiettivo impostato, poi ricalibra.", true);
+      else msg("Campo calibrato. Servi: la velocità compare poco dopo che la pallina esce dall'inquadratura.");
     }
     S.calStep = -1; S.calPts = []; hint(""); $("btnSkip").hidden = true; $("btnCal").textContent = "Calibra il campo"; renderSteps(); drawOverlay();
   }
   function nextCal() {
     S.calStep++;
     if (S.calStep > 2) { endCal(true); return; }
-    $("btnSkip").hidden = S.calStep !== 1;
-    hint("Tocca " + CAL_NAME[S.calStep] + (S.calStep === 1 ? " (se non si vede, salta)" : ""));
+    $("btnSkip").hidden = S.calStep === 0;
+    hint("Tocca " + CAL_NAME[S.calStep] + " (se non si vede, salta)");
     renderSteps();
   }
   overlay.addEventListener("pointerup", e => {
@@ -1352,18 +1368,18 @@ const Core = (() => {
     phoneH: Array.from({ length: 11 }, (_, i) => [(10 + i) / 10, it((10 + i) / 10) + " m"]),
     serverH: Array.from({ length: 51 }, (_, i) => [(150 + i) / 100, (150 + i) + " cm"]),
     offset: [0, 0.25, 0.5, 0.75, 1, 1.5, 2].map(v => [v, v ? it(v) + " m" : "Sul segno centrale"]),
-    sideDist: [[-1, "Automatica (dall'obiettivo)"], [0, "Sulla riga"]].concat([0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 10, 12, 15].map(v => [v, it(v) + " m"]))
+    singlesDist: [[-1, "Automatica (dall'obiettivo)"], [0, "Sulla riga"]].concat([0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 8, 10, 12, 15].map(v => [v, it(v) + " m"]))
   };
   for (const [id, list] of Object.entries(OPTS)) {
     const sel = $(id);
     list.forEach(([v, label]) => { const o = document.createElement("option"); o.value = String(v); o.textContent = label; sel.appendChild(o); });
   }
   function renderSet() {
-    for (const id of ["lens", "phoneH", "serverH", "offset", "sideDist"]) $(id).value = String(S.set[id]);
+    for (const id of ["lens", "phoneH", "serverH", "offset", "singlesDist"]) $(id).value = String(S.set[id]);
     document.querySelectorAll(".seg").forEach(g => g.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.v) === S.set[g.dataset.key]))));
   }
   function saveSet() { store.set("setup", S.set); renderSet(); buildMap(); }
-  for (const id of ["phoneH", "serverH", "offset", "sideDist"]) $(id).onchange = e => { S.set[id] = Number(e.target.value); saveSet(); };
+  for (const id of ["phoneH", "serverH", "offset", "singlesDist"]) $(id).onchange = e => { S.set[id] = Number(e.target.value); saveSet(); };
   $("lens").onchange = e => { S.set.lens = e.target.value; saveSet(); if (S.mode === "live") startCamera(); };
   document.querySelectorAll(".seg").forEach(g => g.addEventListener("click", e => {
     const b = e.target.closest("button"); if (!b) return;
